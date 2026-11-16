@@ -126,6 +126,20 @@ class RunningHub:
         await self.post("/task/openapi/cancel", {"taskId": task_id})
 
 
+def balance(acc):
+    """The Wallet balance (dollars) from RunningHub's accountStatus, or None when no such field is found.
+    API runs are paid from the Wallet (see NOT_ENOUGH_BALANCE), not from the plan credits («remainCoins»)."""
+    if not isinstance(acc, dict):
+        return None
+    keys = [k for k in acc if any(w in k.lower() for w in ("money", "balance", "wallet"))]
+    for k in sorted(keys, key=lambda k: 0 if k == "remainMoney" else 1):
+        try:
+            return float(acc[k])
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def remap_models(graph, available):
     """Swap model file names for the paths the user's RunningHub workflow uses (matched by file name)."""
     by_base = {n.replace("\\", "/").split("/")[-1].lower(): n for n in available}

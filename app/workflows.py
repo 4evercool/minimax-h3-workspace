@@ -539,6 +539,27 @@ def long_plan(scene_seconds, overlap=LONG_OVERLAP, cont_first=False, fresh=()):
     return plan
 
 
+def add_preview(g, preview):
+    """The animated live preview for a finished graph of any video mode: KJNodes' Model Preview Override is put in front of
+    every guider (the model the sampler actually uses). Returns True when something was added."""
+    if not preview:
+        return False
+    n = 0
+    for nid, node in list(g.items()):
+        if node.get("class_type") not in ("BasicGuider", "CFGGuider", "DualCFGGuider"):
+            continue
+        src = node["inputs"].get("model")
+        if not isinstance(src, list) or str(src[0]).startswith("pv_"):
+            continue
+        pid = f"pv_{nid}"
+        g[pid] = {"class_type": "ModelPreviewOverrideKJ", "inputs": {
+            "model": src, "max_resolution": 512, "jpeg_quality": 75, "suppress_default_preview": False,
+            "preview_frames": 12, "preview_fps": 8, "tiny_vae": preview.get("tiny_vae", "none")}}
+        node["inputs"]["model"] = [pid, 0]
+        n += 1
+    return n > 0
+
+
 def _with_preview(g, model, preview):
     """KJNodes' Model Preview Override: an ANIMATED live preview (a few frames of the video latent per step), like in the
     ComfyUI workflow. Without it ComfyUI shows only the first frame. `preview` is None when that node is not installed."""
@@ -1853,7 +1874,7 @@ def upscale_image_graph(m, image, scale, seed, soften=0.0):
     return g, stages
 
 
-RELAY_PIXEL_SECONDS = 10 * 1376 * 768  # the whole clip is decoded in memory: about 10 s at 1376x768 is the limit (author's note)
+RELAY_PIXEL_SECONDS = 16 * 1376 * 768  # the whole clip is decoded in memory: 15 s at 1376x768 (a "15 s" clip is really 15.1 s: 17k+5 frames) (was 10 s; raised by the author, memory on weaker cards not verified)
 RELAY_SEC_PER_MP_FRAME = 0.7   # the author: 5 s of 720p in ~22 s on an RTX 5090 (0.2 s per megapixel-frame); a 4060 Ti is ~3.5x slower: an estimate, not measured here
 
 

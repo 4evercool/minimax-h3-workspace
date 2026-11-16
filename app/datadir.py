@@ -36,12 +36,20 @@ def managed_install_dir(data_dir):
 def locate(app_dir, local_appdata):
     app_dir, legacy = Path(app_dir), Path(local_appdata) / "MinimaxH3Workspace"
     pointer, default = app_dir / "data_location.txt", app_dir / "data"
+    # a second copy of the pointer in the Windows profile (one line): it survives «uninstall + install again». Without it the new
+    # program folder does not know where the settings are, shows the first start and offers to download everything onto drive C.
+    spare = legacy / "data_location.txt"
     cur = None
     try:
         if pointer.exists():
             p = Path(pointer.read_text(encoding="utf-8").strip())
             if p.is_dir():
                 cur = p
+        if cur is None and spare.exists():
+            p = Path(spare.read_text(encoding="utf-8").strip())
+            if (p / "config.json").exists():   # the folder with the settings is still there: use it again
+                cur = p
+                pointer.write_text(str(cur), encoding="utf-8")
         if cur is None:
             cur = default
             if (legacy / "data").is_dir() and not default.exists():
@@ -63,6 +71,9 @@ def locate(app_dir, local_appdata):
             move_all(cur, inst / "data")
             cur = inst / "data"
             pointer.write_text(str(cur), encoding="utf-8")
+        if cur != default:   # the data live in the folder the user chose: remember it for a reinstall
+            legacy.mkdir(parents=True, exist_ok=True)
+            spare.write_text(str(cur), encoding="utf-8")
     except OSError:
         if cur is None or not cur.exists():
             cur = legacy / "data" if (legacy / "data").is_dir() else default

@@ -36,6 +36,7 @@ import engine
 import monitor
 import mp4info
 import report
+import rhlib
 import speech
 import updater
 from version import APP_VERSION
@@ -233,6 +234,11 @@ class App:
         self.apply_mirror()
         return web.json_response({"ok": True, "on": on})
 
+    async def h_live_preview(self, req):
+        on = bool((await req.json()).get("on"))
+        self.config.update(live_preview=on)
+        return web.json_response({"ok": True, "on": on})
+
     def awake_loop(self):
         """While generations are queued or running (and for ten minutes after the last one), Windows is not allowed to go to sleep:
         a long video made scene after scene overnight must not be stopped by the power plan. The screen may still switch off."""
@@ -307,7 +313,8 @@ class App:
 
     def start_managed(self):
         root = self.comfy_root()
-        self.process = engine.ComfyProcess(root, DATA_DIR / "comfyui.log")
+        flags, _err = engine.parse_flags(self.config.get("comfy_flags"))
+        self.process = engine.ComfyProcess(root, DATA_DIR / "comfyui.log", flags or [])
         self.process.start()
         self.output_dir = root / "ComfyUI" / "output"
 
@@ -696,7 +703,7 @@ class App:
         add_modes = {m: round((catalog.plan_size(choice, self.modes() + [m]) - catalog.plan_size(choice, self.modes())) / 1e9, 1)   # gigabytes (plan_size is in bytes)
                      for m in catalog.MODE_ROLES if m not in self.modes()}
         return web.json_response({
-            **base, "online": True, "modes": self.modes(), "add_modes": add_modes, "hf_mirror": bool(self.config.get("hf_mirror")),
+            **base, "online": True, "modes": self.modes(), "add_modes": add_modes, "hf_mirror": bool(self.config.get("hf_mirror")), "live_preview": bool(self.config.get("live_preview", True)),
             "offer_modes": [{"mode": m, "gb": add_modes[m]} for m in catalog.OFFER_MODES
                             if m in add_modes and m not in (self.config.get("offered_modes") or [])],
             "gpu": gpu_name(dev.get("name", "")),
@@ -839,7 +846,7 @@ class App:
 
     async def h_models_pick(self, req):
         if self.locked():
-            raise web.HTTPForbidden(text="В режиме «Я новичок» модели подобраны и менять их нельзя: так всё работает без сбоев.")
+            raise web.HTTPForbidden(text="В режиме «Я новичок» модели подобраны и менять их нельзя: так всё работает без сбоев. Чтобы выбрать свою модель, откройте «Настройки», раздел «Для новичков с опытом: хочу использовать свои модели и LoRA» и нажмите «Открыть все настройки…».")
         body = await req.json()
         role, name = body.get("role"), body.get("name") or ""
         if role not in catalog.VARIANTS:
@@ -1315,6 +1322,37 @@ class App:
         # The engine is stopped only when a new installation really starts (h_setup_install).
         return web.json_response({"ok": True})
 
+    async def h_comfy_flags(self, req):
+        """The user's own ComfyUI launch flags (experts, the built-in ComfyUI only). A set that stops ComfyUI from starting is dropped again."""
+        if self.config.get("engine") != "managed":
+            return web.json_response({"error": "Свои флаги запуска можно задать только для встроенного ComfyUI. Свой ComfyUI вы запускаете сами."}, status=400)
+        if req.method == "GET":
+            return web.json_response({"flags": self.config.get("comfy_flags") or "", "allowed": sorted(engine.FLAGS_OK)})
+        b = await req.json()
+        text = " ".join(str(b.get("flags", "")).split())
+        flags, err = engine.parse_flags(text)
+        if err:
+            return web.json_response({"error": err}, status=400)
+        self.config.update(comfy_flags=text)
+        if not b.get("apply"):
+            return web.json_response({"ok": True, "saved": text, "applied": False})
+        if self.jobs or self.installer or getattr(self, "comfy_updating", False):
+            return web.json_response({"ok": True, "saved": text, "applied": False, "note": "Сейчас идёт задание: флаги сохранены и применятся при следующем запуске ComfyUI."})
+        if self.process:
+            await asyncio.to_thread(self.process.stop)
+        self.start_managed()
+        try:
+            await self.wait_comfy()
+        except Exception as e:
+            self.config.update(comfy_flags="")   # these flags do not let ComfyUI start: back to the default start
+            self.start_managed()
+            try:
+                await self.wait_comfy()
+            except Exception:
+                pass
+            return web.json_response({"error": "ComfyUI не запустился с этими флагами, они сброшены. " + str(e)[-400:]}, status=500)
+        return web.json_response({"ok": True, "saved": text, "applied": True})
+
     async def h_comfy_update(self, _req):
         """«Обновить ComfyUI»: runs the portable build's own update_comfyui.bat (the plain one: NOT _stable and NOT
         _and_python_dependencies, which can swap PyTorch for a CPU build and leave ComfyUI unable to start)."""
@@ -1394,6 +1432,277 @@ class App:
         self.rh_models = None
         return await self.h_cloud_get(req)
 
+    # ---------- «Облако RunningHub»: ready workflows (rhlib.py) run on RunningHub, independent of the «cloud engine» switch ----------
+
+    def rh_client(self):
+        """A RunningHub client whenever a key is saved (the library does not need the global cloud switch)."""
+        key = self.config.get("rh_key")
+        return cloud.RunningHub(self.session, key, self.config.get("rh_host", "ai")) if key else None
+
+    async def h_open_link(self, req):
+        """Open an author's page of a library workflow in the browser (only the links that are listed in rhlib.py)."""
+        url = str((await req.json()).get("url", ""))
+        if url not in {c.get("author", {}).get("url") for c in rhlib.CARDS.values() if c.get("author", {}).get("url")}:
+            raise web.HTTPBadRequest(text="Эта ссылка не из списка")
+        await asyncio.to_thread(webbrowser.open, url)
+        return web.json_response({"ok": True})
+
+    async def h_rhlib_id(self, req):
+        """The workflow ID of one card of the library (the «Референсы» page and the «Экшн» pages have their own)."""
+        b = await req.json()
+        cid, wid = str(b.get("card", "")), str(b.get("id", "")).strip()
+        if cid not in rhlib.CARDS or (wid and not wid.isdigit()):
+            return web.json_response({"error": "ID workflow: только цифры из адреса workflow"}, status=400)
+        ids = dict(self.config.get("rh_cards") or {})
+        ids[cid] = wid
+        self.config.update(rh_cards=ids)
+        return web.json_response({"ok": True, "ids": ids})
+
+    async def h_rhlib_get(self, _req):
+        c = self.config
+        return web.json_response({"cards": rhlib.public(), "has_key": bool(c.get("rh_key")), "host": c.get("rh_host", "ai"),
+                                  "instance": c.get("rh_instance", "default"), "ids": c.get("rh_cards") or {},
+                                  "default_id": c.get("rh_workflow_id", "")})
+
+    async def h_rhlib_run(self, req):
+        rh = self.rh_client()
+        if not rh:
+            return web.json_response({"error": "Сначала вставьте API-ключ RunningHub и нажмите «Сохранить»"}, status=400)
+        form, files = {}, {}
+        async for field in await req.multipart():
+            if re.fullmatch(r"(img[0-8]|vid[0-2]|aud[0-2])", field.name or "") and field.filename:
+                raw = await field.read()
+                suffix = Path(field.filename).suffix or {"vid": ".mp4", "aud": ".mp3"}.get(field.name[:3], ".png")
+                try:
+                    files[field.name] = await rh.upload(f"h3s_{uuid.uuid4().hex[:8]}{suffix}", raw,
+                                                        field.headers.get("Content-Type", "application/octet-stream"))
+                except cloud.CloudError as e:
+                    return web.json_response({"error": str(e)}, status=400)
+            else:
+                form[field.name] = (await field.text())[:20000]
+        cid = form.get("card", "")
+        if cid not in rhlib.CARDS:
+            return web.json_response({"error": "Такой карточки нет"}, status=400)
+        wf_id = form.get("wf", "").strip()
+        if not wf_id.isdigit():
+            return web.json_response({"error": "Впишите ID workflow RunningHub (только цифры из адреса workflow)"}, status=400)
+        need = rhlib.missing(cid, files)
+        if need:
+            return web.json_response({"error": need}, status=400)
+        try:
+            graph, seed = rhlib.build(cid, {k: form.get(k) for k in ("prompt", "duration", "aspect", "mp", "speed", "dmad", "seed", "ref_size")}, files)
+        except (ValueError, KeyError) as e:
+            return web.json_response({"error": f"Неверные значения: {e}"}, status=400)
+        return await self.rh_launch(rh, cid, graph, seed, wf_id, form.get("instance"), form.get("prompt", ""), form.get("aspect", "16:9"), form.get("duration"))
+
+    async def rh_launch(self, rh, cid, graph, seed, wf_id, inst, prompt, aspect, duration, final_mp=None, sub=None):
+        """Send a ready graph of a library card to RunningHub and watch the task."""
+        inst = inst if inst in cloud.INSTANCE_TYPES else "default"
+        ids = dict(self.config.get("rh_cards") or {})
+        ids[cid] = wf_id
+        self.config.update(rh_cards=ids, rh_instance=inst, rh_workflow_id=wf_id)
+        try:
+            bal0 = cloud.balance(await rh.account())   # to tell the user what this very video cost
+        except Exception:
+            bal0 = None
+        try:
+            task = await rh.create(graph, wf_id, inst)
+        except cloud.CloudError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        pid = "rh-" + task
+        dur = float(duration or 0)
+        mp = float(final_mp or graph[rhlib.CARDS[cid]["nodes"]["res"]]["inputs"]["megapixels"])
+        meta = {"mode": "rh", "sub": sub or f"{rhlib.CARDS[cid]['title']} · RunningHub", "prompt": str(prompt)[:2000],
+                "aspect": aspect, "q": f"{mp:g} МП", "len": dur, "seed": seed, "cloud": True,
+                "rh": {"card": rhlib.CARDS[cid]["title"], "gpu": {"default": "24 ГБ", "plus": "48 ГБ", "ultra": "84 ГБ"}.get(inst, inst),
+                       "mp": mp, "mult": graph[rhlib.CARDS[cid]["nodes"]["res"]]["inputs"].get("multiple", 32), "task": task, "bal0": bal0,
+                       "t0": datetime.now().timestamp(), "wf": wf_id, "out": rhlib.CARDS[cid].get("out")}}
+        self.jobs[pid] = {"prompt_id": pid, "state": "queued", "stages": {}, "stage": None, "meta": meta, "task": task}
+        asyncio.create_task(self.poll_cloud(rh, pid))
+        return web.json_response({"prompt_id": pid, "seed": seed})
+
+    async def h_generate_rhaction(self, req):
+        """The «Экшн-видео» page of the RunningHub library: the same form as the local page, the graph is the ready RunningHub workflow."""
+        rh = self.rh_client()
+        if not rh:
+            return web.json_response({"error": "Сначала вставьте API-ключ RunningHub и нажмите «Сохранить»"}, status=400)
+        try:
+            form, prompt, aspect, quality, seed, images, videos, audios, seconds = await self.read_ref_form(req, 6, rh=rh)
+        except cloud.CloudError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        wf_id = form.get("wf", "").strip()
+        if not wf_id.isdigit():
+            return web.json_response({"error": "Впишите ID workflow RunningHub (вверху страницы, рядом с ключом)"}, status=400)
+        files = {**{f"img{i}": n for i, n in enumerate(images)}, **{f"aud{i}": n for i, n in enumerate(audios)}}
+        ref_size = form.get("ref_size") if form.get("ref_size") in ("match", "max") else "max"
+        dmad, speed = lora_strength(form, "dmad", 0.8), lora_strength(form, "speed", 4.0)   # None: the user switched it off
+        mp = round(wf.QUALITY[quality] / 1048576, 3)
+        try:
+            graph, seed = rhlib.build("action", {"prompt": wf.lipsync_prompt(prompt, len(images)), "duration": seconds, "aspect": aspect, "mp": mp,
+                                                 "ref_size": ref_size, "seed": seed, "dmad": 0.0 if dmad is None else dmad,
+                                                 "speed": 0.0 if speed is None else speed}, files)
+        except (ValueError, KeyError) as e:
+            return web.json_response({"error": f"Неверные значения: {e}"}, status=400)
+        return await self.rh_launch(rh, "action", graph, seed, wf_id, form.get("instance"), prompt, aspect, seconds)
+
+    async def h_generate_rhactionsc(self, req):
+        """The «Экшн-видеостудия» page of the RunningHub library: the scenes are glued into ONE multi-shot prompt (shot k starts at the sum of the
+        lengths before it) and the whole video is made by one task. A scene that continues the previous one from its saved state is not possible there."""
+        rh = self.rh_client()
+        if not rh:
+            return web.json_response({"error": "Сначала вставьте API-ключ RunningHub и нажмите «Сохранить»"}, status=400)
+        fields = ("img0", "img1", "img2", "img3", "img4", "aud0") + tuple(f"simg{i}_{j}" for i in range(12) for j in range(5))
+        try:
+            form, files, _p, aspect, quality, seed = await self.read_form(req, fields, need_prompt=False, rh=rh)
+        except cloud.CloudError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        wf_id = form.get("wf", "").strip()
+        if not wf_id.isdigit():
+            return web.json_response({"error": "Впишите ID workflow RunningHub (вверху страницы, рядом с ключом)"}, status=400)
+        try:
+            raw = [(str(x.get("prompt", "")).strip(), float(x.get("sec", 5)), i) for i, x in enumerate(json.loads(form.get("scenes") or "[]"))]
+        except (ValueError, TypeError, AttributeError):
+            raw = []
+        scenes = [(p, max(1.0, min(15.0, sec)), i) for p, sec, i in raw if p][:12]
+        if not scenes:
+            return web.json_response({"error": "Напишите хотя бы одну сцену"}, status=400)
+        total = sum(sec for _, sec, _ in scenes)
+        if total > 25.5:
+            return web.json_response({"error": f"На RunningHub весь ролик одним заданием не длиннее 25 секунд (у вас {total:.0f} с). Сократите сцены."}, status=400)
+        parts, t = [], 0.0
+        for k, (p, sec, _i) in enumerate(scenes):
+            parts.append(p if k == 0 else f"[Shot {k + 1}] At {int(t // 60):02d}:{t % 60:06.3f}, a new plan: {p}")
+            t += sec
+        images = [files[f"img{i}"] for i in range(5) if f"img{i}" in files]
+        images += [files[f"simg{i}_{j}"] for _p, _s, i in scenes for j in range(5) if f"simg{i}_{j}" in files]
+        images = images[:9]
+        if not images:
+            return web.json_response({"error": "Добавьте хотя бы одно изображение героя или локации"}, status=400)
+        rfiles = {f"img{i}": n for i, n in enumerate(images)}
+        if files.get("aud0"):
+            rfiles["aud0"] = files["aud0"]
+        ref_size = form.get("ref_size") if form.get("ref_size") in ("match", "max") else "max"
+        dmad, speed = lora_strength(form, "dmad", 0.8), lora_strength(form, "speed", 4.0)
+        mp = round(wf.QUALITY[quality] / 1048576, 3)
+        text = "\n\n".join(parts)
+        try:
+            graph, seed = rhlib.build("action", {"prompt": wf.lipsync_prompt(text, len(images)), "duration": total, "aspect": aspect, "mp": mp,
+                                                 "ref_size": ref_size, "seed": seed, "dmad": 0.0 if dmad is None else dmad,
+                                                 "speed": 0.0 if speed is None else speed}, rfiles)
+        except (ValueError, KeyError) as e:
+            return web.json_response({"error": f"Неверные значения: {e}"}, status=400)
+        return await self.rh_launch(rh, "action", graph, seed, wf_id, form.get("instance"), text, aspect, total)
+
+    async def h_generate_rhlipsync(self, req):
+        """The «Lipsync» page of the RunningHub library: the same form as the local page (the audio clip is already cut there)."""
+        rh = self.rh_client()
+        if not rh:
+            return web.json_response({"error": "Сначала вставьте API-ключ RunningHub и нажмите «Сохранить»"}, status=400)
+        ref_fields = tuple(f"ref{i}" for i in range(9))
+        try:
+            form, files, prompt, aspect, quality, seed = await self.read_form(req, ref_fields + ("audio",), rh=rh)
+        except cloud.CloudError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        wf_id = form.get("wf", "").strip()
+        if not wf_id.isdigit():
+            return web.json_response({"error": "Впишите ID workflow RunningHub (вверху страницы, рядом с ключом)"}, status=400)
+        if "audio" not in files:
+            return web.json_response({"error": "Загрузите аудио"}, status=400)
+        refs = [files[f] for f in ref_fields if f in files]
+        if not refs:
+            return web.json_response({"error": "Добавьте хотя бы один референс — лицо персонажа"}, status=400)
+        try:
+            seconds = float(form.get("audio_len", 0))
+        except ValueError:
+            seconds = 0.0
+        if not 1 <= seconds <= 15:
+            return web.json_response({"error": "Фрагмент аудио должен быть от 1 до 15 секунд"}, status=400)
+        ref_size = form.get("ref_size") if form.get("ref_size") in ("match", "max") else "max"
+        scale = wf.lipsync_scale(quality)
+        final_mp = round(wf.QUALITY[quality] / 1048576, 3)
+        first_mp = round(final_mp / scale ** 2, 3)   # the first pass is small, the second one enlarges it by `scale`
+        realism = lora_strength(form, "realism", None)   # off unless the user switched it on
+        rfiles = {**{f"img{i}": n for i, n in enumerate(refs)}, "audio": files["audio"]}
+        try:
+            graph, seed = rhlib.build("lipsync", {"prompt": wf.lipsync_prompt(prompt, len(refs)), "duration": seconds, "aspect": aspect, "mp": first_mp,
+                                                  "ref_size": ref_size, "seed": seed, "scale": scale, "realism": 0.0 if realism is None else realism,
+                                                  "accel": form.get("rh_accel") == "1"}, rfiles)
+        except (ValueError, KeyError) as e:
+            return web.json_response({"error": f"Неверные значения: {e}"}, status=400)
+        return await self.rh_launch(rh, "lipsync", graph, seed, wf_id, form.get("instance"), prompt, aspect, seconds, final_mp)
+
+    async def h_generate_rhvideo(self, req):
+        """The «Image-to-Video» page of the RunningHub library (Fast Video): text, first frame, first + last frame, a loop."""
+        rh = self.rh_client()
+        if not rh:
+            return web.json_response({"error": "Сначала вставьте API-ключ RunningHub и нажмите «Сохранить»"}, status=400)
+        try:
+            form, files, prompt, aspect, quality, seed = await self.read_form(req, ("first", "last"), rh=rh)
+        except cloud.CloudError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        wf_id = form.get("wf", "").strip()
+        if not wf_id.isdigit():
+            return web.json_response({"error": "Впишите ID workflow RunningHub (вверху страницы, рядом с ключом)"}, status=400)
+        seconds = min(MAX_SECONDS, max(3.0, float(form.get("duration", 5))))
+        first = files.get("first")
+        last = files.get("last") if first else None
+        loop = bool(first) and form.get("loop") == "1"
+        mp = round(wf.QUALITY[quality] / 1048576, 3)
+        try:
+            graph, seed = rhlib.build("video", {"prompt": prompt, "duration": seconds, "aspect": aspect, "mp": mp, "seed": seed, "loop": loop},
+                                      {k: v for k, v in (("first", first), ("last", last)) if v})
+        except (ValueError, KeyError) as e:
+            return web.json_response({"error": f"Неверные значения: {e}"}, status=400)
+        sub = "Зацикленное видео" if loop else "Кадр → кадр" if last else "Изображение → видео" if first else "Текст → видео"
+        return await self.rh_launch(rh, "video", graph, seed, wf_id, form.get("instance"), prompt, aspect, seconds, sub=sub + " · RunningHub")
+
+    async def h_generate_rhrefs(self, req):
+        """The «Референсы» page of the RunningHub library: the same form as the local page, the graph is the ready RunningHub workflow."""
+        rh = self.rh_client()
+        if not rh:
+            return web.json_response({"error": "Сначала вставьте API-ключ RunningHub и нажмите «Сохранить»"}, status=400)
+        try:
+            form, prompt, aspect, quality, seed, images, videos, audios, seconds = await self.read_ref_form(req, 9, rh=rh)
+        except cloud.CloudError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        wf_id = form.get("wf", "").strip()
+        if not wf_id.isdigit():
+            return web.json_response({"error": "Впишите ID workflow RunningHub (вверху страницы, рядом с ключом)"}, status=400)
+        files = {**{f"img{i}": n for i, n in enumerate(images)}, **{f"vid{i}": n for i, n in enumerate(videos)}, **{f"aud{i}": n for i, n in enumerate(audios)}}
+        ref_size = form.get("ref_size") if form.get("ref_size") in ("match", "max") else "max"
+        steps = int(form["steps"]) if str(form.get("steps", "")).isdigit() else 6   # as the local page: 4 fast, 6 balance, 8 dynamics
+        mp = round(wf.QUALITY[quality] / 1048576, 3)
+        try:
+            graph, seed = rhlib.build("refs", {"prompt": wf.lipsync_prompt(prompt, len(images), len(videos)), "duration": seconds, "aspect": aspect,
+                                               "mp": mp, "ref_size": ref_size, "seed": seed, "steps": steps,
+                                               "accel": form.get("rh_accel") == "1"}, files)
+        except (ValueError, KeyError) as e:
+            return web.json_response({"error": f"Неверные значения: {e}"}, status=400)
+        return await self.rh_launch(rh, "refs", graph, seed, wf_id, form.get("instance"), prompt, aspect, seconds)
+
+    async def rh_finish(self, rh, item, video):
+        """The facts about one finished RunningHub video: time, cost (Wallet before/after), card, size, task number."""
+        info = item["rh"]
+        info["secs"] = round(datetime.now().timestamp() - info.pop("t0", datetime.now().timestamp()))
+        mp = info.get("mp") or 1.0
+        m = info.get("mult") or 32
+        try:
+            aw, ah = (float(x) for x in str(item.get("aspect") or "16:9").split(":"))
+        except ValueError:
+            aw, ah = 16.0, 9.0
+        item["res"] = f'{round((mp * 1048576 * aw / ah) ** 0.5 / m) * m}×{round((mp * 1048576 * ah / aw) ** 0.5 / m) * m}'
+        # whatever RunningHub itself says about this task's price/time (field names are not documented: keep the short plain ones)
+        info["billing"] = {k: v for k, v in video.items()
+                           if isinstance(v, (int, float, str)) and len(str(v)) < 40 and "url" not in k.lower() and k.lower() not in ("filetype", "nodeid")}
+        await asyncio.sleep(3)   # the payment is booked a moment after the task ends
+        try:
+            bal1 = cloud.balance(await rh.account())
+        except Exception:
+            bal1 = None
+        info["bal1"] = bal1
+        if info.get("bal0") is not None and bal1 is not None:
+            info["cost"] = round(info["bal0"] - bal1, 4)
+
     async def h_setup_cloud(self, _req):
         """First-run choice "cloud only": nothing installed locally."""
         if not (self.config.get("rh_key") and self.config.get("rh_enabled")):
@@ -1446,8 +1755,10 @@ class App:
                         await self.send_stage(job, stage)
                 if status == "SUCCESS":
                     outs = await rh.outputs(job["task"]) or []
-                    video = next((o for o in outs if str(o.get("fileType", "")).lower() in ("mp4", "webm", "mov", "mkv")
-                                  or str(o.get("fileUrl", "")).lower().split("?")[0].endswith((".mp4", ".webm", ".mov"))), None)
+                    vids = [o for o in outs if str(o.get("fileType", "")).lower() in ("mp4", "webm", "mov", "mkv")
+                            or str(o.get("fileUrl", "")).lower().split("?")[0].endswith((".mp4", ".webm", ".mov"))]
+                    out_node = (job["meta"].get("rh") or {}).get("out")
+                    video = (next((o for o in vids if str(o.get("nodeId")) == str(out_node)), None) or (vids[-1] if vids else None)) if out_node else (vids[0] if vids else None)
                     if not video:
                         raise cloud.CloudError("RunningHub не вернул видео")
                     dest = DATA_DIR / "cloud" / f'{pid}.mp4'
@@ -1460,6 +1771,8 @@ class App:
                                 file={"type": "local", "path": str(dest), "filename": dest.name})
                     if video.get("consumeCoins"):
                         item["sub"] = f'{item.get("sub", "")} · ☁ {video["consumeCoins"]} RH'.strip(" ·")
+                    if isinstance(item.get("rh"), dict):
+                        await self.rh_finish(rh, item, video)
                     self.library.add(item)
                     await self.broadcast({"type": "done", "prompt_id": pid, "item": self.public(item)})
                     return
@@ -1472,9 +1785,9 @@ class App:
                 self.jobs.pop(pid, None)
                 await self.broadcast({"type": "error", "prompt_id": pid, "message": str(e)})
 
-    async def read_form(self, req, file_fields, need_prompt=True):
+    async def read_form(self, req, file_fields, need_prompt=True, rh=None):
         form, files = {}, {}
-        rh = self.rh()
+        rh = rh or self.rh()
         async for field in await req.multipart():
             if field.name in file_fields and field.filename:
                 files[field.name] = await self.upload_input(field, rh)
@@ -1496,6 +1809,13 @@ class App:
             return await self.queue_cloud(rh, graph, stages, meta)
         await self.stop_llm()  # the agent's model and H3 do not fit in VRAM together
         mode_key = (meta or {}).get("mode", "")
+        # the animated live preview («see what comes out, stop in time») in the video modes that have none of their own; one switch in Settings
+        if mode_key in ("video", "lipsync", "refs", "actor", "swap") and self.config.get("live_preview", True) \
+                and not any(n.get("class_type") == "ModelPreviewOverrideKJ" for n in graph.values()):
+            try:
+                wf.add_preview(graph, await self.preview_opts("long"))
+            except Exception as e:
+                self.note_error(f"Живое превью не включилось: {e}")
         same = mode_key == getattr(self, "last_mode", None) and mode_key in ("krea", "kreareal", "qwen", "flux")
         self.last_mode = mode_key
         # nothing is running or waiting: drop the previous job's models and cache so each job starts clean.
@@ -1523,7 +1843,20 @@ class App:
                           "t0": asyncio.get_event_loop().time()}
         return web.json_response({"prompt_id": pid, "seed": meta["seed"], "queue_number": res.get("number")})
 
+    async def comfy_old(self):
+        """True when this ComfyUI is older than 0.45.0 (no MiniMax H3 Image / RelayVSR nodes)."""
+        try:
+            v = (await self.system_stats())["system"].get("comfyui_version") or ""
+        except Exception:
+            return False
+        m = re.match(r"(\d+)\.(\d+)\.(\d+)", v)
+        return bool(m) and int(m.group(1)) == 0 and int(m.group(2)) < 45
+
     async def need_models(self, mode):
+        if mode == "h3img" and not self.rh() and await self.comfy_old():
+            how = ("Откройте «Настройки», блок «Движок», и нажмите «Обновить ComfyUI»." if self.config.get("engine") == "managed"
+                   else "Закройте программу и ComfyUI, откройте в папке ComfyUI папку update и запустите update_comfyui.bat (только его), затем запустите снова.")
+            raise web.HTTPBadRequest(text="MiniMax H3 Image нужен ComfyUI версии 0.45.0 или новее: ваш старше, поэтому нужного узла в нём нет. " + how)
         if self.rh():  # models live on RunningHub
             if not self.model_names:
                 self.model_names = {r: catalog.VARIANTS[r][v]["name"] for r, v in self.choice().items()}
@@ -2012,10 +2345,10 @@ class App:
             "aspect": aspect, "q": quality, "len": seconds, "res": f"{out_w}×{out_h}", "seed": seed,
             "ref_size": ref_size})
 
-    async def read_ref_form(self, req, max_images):
+    async def read_ref_form(self, req, max_images, rh=None):
         fields = tuple(f"img{i}" for i in range(max_images)) + tuple(f"vid{i}" for i in range(3)) + \
             tuple(f"aud{i}" for i in range(3))
-        form, files, prompt, aspect, quality, seed = await self.read_form(req, fields)
+        form, files, prompt, aspect, quality, seed = await self.read_form(req, fields, rh=rh)
         pick = lambda p, n: [files[f"{p}{i}"] for i in range(n) if f"{p}{i}" in files]
         images, videos, audios = pick("img", max_images), pick("vid", 3), pick("aud", 3)
         if not images and not videos:
@@ -2170,7 +2503,7 @@ class App:
         """Settings for the animated live preview, or None when ComfyUI has no KJNodes' Model Preview Override.
         Only the action scenes use it (there the motion is what has to be judged, as in the original workflow); in the
         other modes it is off: the animated preview made generation noticeably slower, the usual single-frame preview is used."""
-        if mode != "action":
+        if mode not in ("action", "long"):
             return None
         try:
             status, oi = await self.comfy_json("GET", "/object_info/ModelPreviewOverrideKJ")
@@ -2400,7 +2733,7 @@ class App:
                     "long": {"run": run, "part": k, "n": len(scenes), "draft": False, "test": test, "kind": "action"}})
             graph, stages = wf.long_part_graph(self.model_names, scenes, k, width, height, seed, images, audio, start,
                                                dmad if draft else fin, self.custom_loras("long"), "match", vocals, state,
-                                               await self.preview_opts(), cont, form.get("src_project") == "1", fresh, draft)
+                                               await self.preview_opts("long") if form.get("preview") != "0" else None, cont, form.get("src_project") == "1", fresh, draft)
             plan = wf.long_plan([sc[1] for sc in scenes], cont_first=bool(cont) or form.get("src_project") == "1", fresh=fresh)
             sub = f"сцена {k + 1} из {len(scenes)}" + (" · музыка" if audio else " · звук от модели")
             return await self.queue(graph, stages, {
@@ -2408,7 +2741,7 @@ class App:
                 "len": round((plan[k]["total"] - plan[k]["ov"]) / wf.FPS, 1), "res": f"{width}×{height}", "seed": seed,
                 "long": {"run": run, "part": k, "n": len(scenes), "draft": draft, "test": test}})
         graph, stages = wf.long_graph(self.model_names, scenes, width, height, seed, images, audio, start,
-                                      dmad if draft else fin, self.custom_loras("long"), "match", vocals, await self.preview_opts(), fresh, False, draft)
+                                      dmad if draft else fin, self.custom_loras("long"), "match", vocals, await self.preview_opts("long") if form.get("preview") != "0" else None, fresh, False, draft)
         run = re.sub(r"[^A-Za-z0-9]", "", form.get("run", ""))[:32]
         self._long_run = run
         total = wf.long_plan([sc[1] for sc in scenes], fresh=fresh)[-1]["acc"] / wf.FPS
@@ -2754,7 +3087,7 @@ class App:
         job = self.jobs.get(pid)
         if job and job.get("task"):  # cloud task
             self.jobs.pop(pid, None)
-            rh = self.rh()
+            rh = self.rh() or self.rh_client()
             if rh:
                 try:
                     await rh.cancel(job["task"])
@@ -3031,6 +3364,33 @@ class App:
                 await resp.write(chunk)
             return resp
 
+    async def h_frame_save(self, req):
+        """A picture taken from a video by the browser (one frame, PNG): into the Library and the program's results folder."""
+        png, form = None, {}
+        async for field in await req.multipart():
+            if field.name == "frame":
+                png = await field.read(decode=False)
+            else:
+                form[field.name] = (await field.text())[:200]
+        if not png or png[:8] != b"\x89PNG\r\n\x1a\n":
+            return web.json_response({"error": "Кадр не получен. Остановите видео и попробуйте ещё раз"}, status=400)
+        iid = uuid.uuid4().hex[:12]
+        now = datetime.now()
+        src = self.library.get(form.get("src", "")) or {}
+        part = {"first": "первый", "last": "последний"}.get(form.get("which", ""), "кадр")
+        try:
+            d = self.results_dir()
+            d.mkdir(parents=True, exist_ok=True)
+            dest = d / f"{now.strftime('%Y%m%d')}_{iid}_frame.png"
+            await asyncio.to_thread(dest.write_bytes, png)
+        except OSError as e:
+            return web.json_response({"error": f"Не удалось сохранить кадр: {e}"}, status=500)
+        item = {"id": iid, "kind": "image", "mode": "frame", "sub": f"Кадр из видео ({part})", "prompt": src.get("prompt", ""),
+                "date": now.isoformat(timespec="seconds"), "fav": False, "ext": "png",
+                "res": form.get("res", ""), "file": {"type": "local", "path": str(dest), "filename": dest.name}}
+        self.library.add(item)
+        return web.json_response(self.public(item))
+
     async def h_srcfile(self, req):
         """The file an enlarged result was made from (the 'before' of the before/after slider)."""
         item = self.library.get(req.match_info["id"])
@@ -3042,11 +3402,28 @@ class App:
         f = item.get("src_file")
         if not f:
             raise web.HTTPNotFound()
-        async with self.session.get(self.comfy + "/view", params=f) as r:
-            if r.status != 200:
-                raise web.HTTPNotFound(text="Исходный файл не найден")
-            body = await r.read()
-            return web.Response(body=body, content_type=r.headers.get("Content-Type", "application/octet-stream"))
+        # The «before» video must be seekable (the before/after slider keeps it on the same moment as the result): a plain body from
+        # ComfyUI has no Range support, so the player could only play the first piece. Keep a copy on disk and serve it as a file.
+        cache = DATA_DIR / "srccache"
+        key = hashlib.md5(json.dumps(f, sort_keys=True).encode()).hexdigest() + Path(str(f.get("filename", ""))).suffix
+        p = cache / key
+        if not p.exists():
+            async with self.session.get(self.comfy + "/view", params=f) as r:
+                if r.status != 200:
+                    raise web.HTTPNotFound(text="Исходный файл не найден")
+                body = await r.read()
+            try:
+                cache.mkdir(parents=True, exist_ok=True)
+                tmp = p.with_suffix(p.suffix + ".part")
+                await asyncio.to_thread(tmp.write_bytes, body)
+                tmp.replace(p)
+                now = datetime.now().timestamp()
+                for old in cache.iterdir():   # a week is enough for looking at a comparison
+                    if old != p and now - old.stat().st_mtime > 7 * 86400:
+                        old.unlink(missing_ok=True)
+            except OSError:
+                return web.Response(body=body, content_type="application/octet-stream")
+        return web.FileResponse(p)
 
     async def h_events(self, req):
         ws = web.WebSocketResponse(heartbeat=20)
@@ -3468,9 +3845,12 @@ def build_app(comfy_override=None):
         web.post("/api/setup/install", state.h_setup_install),
         web.post("/api/mode/add", state.h_mode_add),
         web.post("/api/settings/mirror", state.h_mirror),
+        web.post("/api/settings/live-preview", state.h_live_preview),
         web.post("/api/mode/offered", state.h_mode_offered),
         web.post("/api/setup/cancel", state.h_setup_cancel),
         web.post("/api/comfy/update", state.h_comfy_update),
+        web.get("/api/settings/comfy-flags", state.h_comfy_flags),
+        web.post("/api/settings/comfy-flags", state.h_comfy_flags),
         web.post("/api/open-driver-page", state.h_open_driver),
         web.post("/api/dmad/open", state.h_open_dmad),
         web.post("/api/results/open", state.h_results_open),
@@ -3559,6 +3939,16 @@ def build_app(comfy_override=None):
         web.patch("/api/library/{id}", state.h_library_patch),
         web.delete("/api/library/{id}", state.h_library_delete),
         web.post("/api/library/delete", state.h_library_delete_many),
+        web.post("/api/frame", state.h_frame_save),
+        web.get("/api/rhlib", state.h_rhlib_get),
+        web.post("/api/rhlib/id", state.h_rhlib_id),
+        web.post("/api/rhlib/link", state.h_open_link),
+        web.post("/api/rhlib/run", state.h_rhlib_run),
+        web.post("/api/generate/rh_refs", state.h_generate_rhrefs),
+        web.post("/api/generate/rh_video", state.h_generate_rhvideo),
+        web.post("/api/generate/rh_lipsync", state.h_generate_rhlipsync),
+        web.post("/api/generate/rh_action", state.h_generate_rhaction),
+        web.post("/api/generate/rh_actionsc", state.h_generate_rhactionsc),
         web.get("/api/file/{id}", state.h_file),
         web.get("/api/srcfile/{id}", state.h_srcfile),
         web.get("/api/events", state.h_events),

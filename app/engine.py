@@ -355,9 +355,50 @@ def local_env(root):
     return env
 
 
+# launch flags the user may add (for experts): only speed and memory ones. Anything that changes the address, the port, the folders
+# or opens the network is refused: the program talks to ComfyUI on 127.0.0.1 and reads its output folder.
+FLAGS_OK = {
+    "--disable-pinned-memory": 0, "--use-sage-attention": 0, "--use-pytorch-cross-attention": 0, "--use-flash-attention": 0,
+    "--use-split-cross-attention": 0, "--use-quad-cross-attention": 0, "--fast": "list", "--lowvram": 0, "--novram": 0, "--highvram": 0,
+    "--normalvram": 0, "--gpu-only": 0, "--force-fp16": 0, "--force-fp32": 0, "--fp16-unet": 0, "--bf16-unet": 0, "--fp32-unet": 0,
+    "--fp8_e4m3fn-unet": 0, "--fp8_e5m2-unet": 0, "--fp16-vae": 0, "--bf16-vae": 0, "--fp32-vae": 0, "--cpu-vae": 0,
+    "--disable-smart-memory": 0, "--reserve-vram": "number", "--cache-lru": "number", "--cache-none": 0, "--cache-classic": 0,
+    "--async-offload": "number", "--disable-async-offload": 0, "--dont-upcast-attention": 0, "--force-upcast-attention": 0,
+    "--disable-xformers": 0, "--force-channels-last": 0, "--cuda-malloc": 0, "--disable-cuda-malloc": 0, "--disable-mmap": 0,
+    "--mmap-torch-files": 0, "--deterministic": 0, "--supports-fp8-compute": 0,
+}
+
+
+def parse_flags(text):
+    """(list of arguments, error text). Empty text is fine."""
+    toks = str(text or "").replace(",", " ").split()
+    out, i = [], 0
+    while i < len(toks):
+        t = toks[i]
+        if t not in FLAGS_OK:
+            return None, f"Флаг «{t}» не разрешён: можно только настройки скорости и памяти (например --disable-pinned-memory --use-sage-attention --fast)."
+        kind = FLAGS_OK[t]
+        out.append(t)
+        i += 1
+        if kind == "number" or kind == "list":
+            vals = []
+            while i < len(toks) and not toks[i].startswith("--"):
+                vals.append(toks[i]); i += 1
+            if kind == "number" and len(vals) > 1:
+                return None, f"У флага {t} должно быть одно число."
+            for v in vals:
+                if not re.fullmatch(r"[0-9.]+", v) if kind == "number" else not re.fullmatch(r"[A-Za-z0-9_]+", v):
+                    return None, f"Недопустимое значение «{v}» у флага {t}."
+            out.extend(vals)
+        elif i < len(toks) and not toks[i].startswith("--"):
+            return None, f"У флага {t} не бывает значения («{toks[i]}»)."
+    return out, ""
+
+
 class ComfyProcess:
-    def __init__(self, comfy_root, log_path):
+    def __init__(self, comfy_root, log_path, extra_args=()):
         self.root = Path(comfy_root)
+        self.extra_args = list(extra_args)
         self.log_path = log_path
         self.proc = None
         self.port = None
@@ -373,7 +414,7 @@ class ComfyProcess:
         self.kill_orphans(py)
         self.port = free_port(8188)
         args = [str(py), "-s", "ComfyUI\\main.py", "--windows-standalone-build", "--disable-auto-launch",
-                "--listen", "127.0.0.1", "--port", str(self.port), "--preview-method", "auto"]
+                "--listen", "127.0.0.1", "--port", str(self.port), "--preview-method", "auto", *self.extra_args]
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         try:   # keep the previous run's log: after a crash and restart it holds the reason
             if self.log_path.exists() and self.log_path.stat().st_size:
