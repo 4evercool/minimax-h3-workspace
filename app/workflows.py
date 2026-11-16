@@ -851,10 +851,12 @@ def action_sizes(width, height):
 
 
 def action_part_graph(m, scenes, k, width, height, seed, images, loras, preview=None, state=None, fresh=(), faithful=False,
-                      refiner_args=None, single=False, sing=False, steps=12):
+                      refiner_args=None, single=False, sing=False, steps=12, audio=None, start=0.0, vocals=None, audios=()):
     """ACTION scene number `k` (0-based) of a scene-by-scene video, the same idea as long_part_graph (scene k continues the saved
     latent tail of scene k-1, the clip is cut off at the overlap) but with the action model: hybrid, DMAD + Speed Slider,
-    8 steps at 0.6x size, learned latent upscale, 4 steps at full size. The sound is made by the model.
+    8 steps at 0.6x size, learned latent upscale, 4 steps at full size. The sound is made by the model, unless `audio` (the user's
+    own track, as in the Video studio: the piece of it that belongs to this scene is locked in the audio latent and put into the clip;
+    only in the one-pass route `single`, which is what the page uses).
 
     The tail of the previous scene (full size) is decoded, scaled down and encoded again to continue pass 1 at low size; before
     pass 2 the true full-size tail is put back in front of the upscaled new part, so the join stays sharp.
@@ -906,7 +908,7 @@ def action_part_graph(m, scenes, k, width, height, seed, images, loras, preview=
     ref = add("MiniMaxH3ReferenceToVideo", clip=["4", 0], vae=["5", 0], audio_vae=["6", 0], prompt=sc[0],
               width=lw, height=lh, length=total, ref_image_size="max")
     own = list(sc[2]) if len(sc) > 2 and sc[2] else []
-    _refs(g, ref, own or images, base=100)
+    _refs(g, ref, own or images, audios=audios, base=100)   # up to 3 audio samples (voice, music, atmosphere): the model listens, the sound is still its own
     new = add("LTXVSeparateAVLatent", av_latent=[ref, 1])
     stages = {}
     old_full = None
@@ -936,7 +938,20 @@ def action_part_graph(m, scenes, k, width, height, seed, images, loras, preview=
         else:
             v_lat = [add("SetLatentNoiseMask", samples=[cut2, 0], mask=[vmask, 0]), 0]
         stages.update({n: "encode" for n in (old_full, old_low)})
-    lat = add("LTXVConcatAVLatent", video_latent=v_lat, audio_latent=[new, 1])
+    own_audio = bool(audio) and single and not faithful
+    a_lat = [new, 1]
+    if own_audio:   # the same way as long_part_graph: this scene's piece of the track is encoded and masked out of the noise
+        src = [add("LoadAudio", audio=audio), 0]
+        heard = src
+        if vocals:
+            ml = add("MelBandRoFormerModelLoader", model_name=vocals)
+            heard = [add("MelBandRoFormerSampler", model=[ml, 0], audio=src), 0]
+        ptr = start + ((p["acc_before"] - ov) / FPS if k else 0)
+        trim = add("TrimAudioDuration", audio=heard, start_index=round(max(0.0, ptr), 3), duration=round(total / FPS, 3))
+        enc = add("VAEEncodeAudio", audio=[trim, 0], vae=["6", 0])
+        amask = add("SolidMask", value=0.0, width=round(total * 5 / 3), height=2)
+        a_lat = [add("SetLatentNoiseMask", samples=[enc, 0], mask=[amask, 0]), 0]
+    lat = add("LTXVConcatAVLatent", video_latent=v_lat, audio_latent=a_lat)
     noise = add("RandomNoise", noise_seed=seed + 100 * k)
     if faithful:
         neg = add("ConditioningZeroOut", conditioning=[ref, 0])
@@ -979,10 +994,15 @@ def action_part_graph(m, scenes, k, width, height, seed, images, loras, preview=
     img = add("VAEDecode", samples=final, vae=["5", 0])
     clip_len = total - ov
     frames_out = [img, 0] if not cont else [add("ImageFromBatch", image=[img, 0], batch_index=ov, length=clip_len), 0]
-    dec_a = add("VAEDecodeAudio", samples=final, vae=["6", 0])
-    aud = [dec_a, 0] if not cont else [add("TrimAudioDuration", audio=[dec_a, 0], start_index=round(ov / FPS, 3),
-                                              duration=round(clip_len / FPS, 3)), 0]
-    aud = _audio_fade(add, aud, round(clip_len / FPS, 3), head=cont, tail=True)
+    dec_a = None
+    if own_audio:   # the user's track itself goes into the clip (the part of it that this scene shows)
+        a0 = start + (p["acc_before"] / FPS if k else 0)
+        aud = [add("TrimAudioDuration", audio=src, start_index=round(a0, 3), duration=round(clip_len / FPS, 3)), 0]
+    else:
+        dec_a = add("VAEDecodeAudio", samples=final, vae=["6", 0])
+        aud = [dec_a, 0] if not cont else [add("TrimAudioDuration", audio=[dec_a, 0], start_index=round(ov / FPS, 3),
+                                                  duration=round(clip_len / FPS, 3)), 0]
+        aud = _audio_fade(add, aud, round(clip_len / FPS, 3), head=cont, tail=True)
     vid = add("CreateVideo", images=frames_out, audio=aud, fps=float(FPS), bit_depth="auto", color_space="sRGB", codec="none")
     save = add("SaveVideo", video=[vid, 0], filename_prefix="H3Workspace/long_part", format="auto", **{"format.codec": "auto"})
     sep2 = add("LTXVSeparateAVLatent", av_latent=final)
@@ -991,7 +1011,9 @@ def action_part_graph(m, scenes, k, width, height, seed, images, loras, preview=
     stages.update({n: "load" for n in ["1", "2", "3", "4", "5", "6", "7"] + [x for x in g if x.isdigit() and 60 <= int(x) < 70]})
     if preview:
         stages["30"] = "load"
-    stages.update({ref: "encode", img: "decode", dec_a: "decode", vid: "save", save: "save", sep2: "save", tail: "save", keep: "save"})
+    stages.update({ref: "encode", img: "decode", vid: "save", save: "save", sep2: "save", tail: "save", keep: "save"})
+    if dec_a:
+        stages[dec_a] = "decode"
     stages.update(smp_stages)
     stages["__scenes__"] = {"n": len(scenes), "map": {n: k for n, s in smp_stages.items() if s.startswith("sample")}}   # progress text "scene 2 of 4"
     return g, stages

@@ -32,11 +32,13 @@ async def check(session):
     """{"available": bool, "current", "version", "url", "asset", "size", "sha256"}; never raises (no internet is normal)."""
     out = {"available": False, "current": APP_VERSION}
     try:
-        async with session.get(API, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=8)) as r:
+        async with session.get(API, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=15)) as r:
             if r.status != 200:
+                out["failed"] = f"GitHub ответил {r.status}"
                 return out
             rel = await r.json()
     except Exception:
+        out["failed"] = "GitHub не отвечает"
         return out
     new, cur = parse(rel.get("tag_name")), parse(APP_VERSION)
     asset = next((a for a in rel.get("assets", []) if a.get("name") == ASSET), None)
@@ -50,8 +52,9 @@ async def check(session):
     return out
 
 
-async def download(session, info):
-    """Save the installer to a temp folder and check it against the size and sha256 GitHub published. Returns its path."""
+async def download(session, info, prog=None):
+    """Save the installer to a temp folder and check it against the size and sha256 GitHub published. Returns its path.
+    `prog`: a dict that gets {"done", "total"} bytes while the file comes (the page shows a bar from it)."""
     if not info.get("asset", "").startswith(DOWNLOAD_PREFIX):
         raise ValueError("Адрес обновления не с GitHub")
     folder = Path(tempfile.gettempdir()) / "h3studio_update"
@@ -67,6 +70,8 @@ async def download(session, info):
                 f.write(chunk)
                 sha.update(chunk)
                 size += len(chunk)
+                if prog is not None:
+                    prog.update(done=size, total=int(info.get("size") or r.content_length or 0))
     if (info.get("size") and size != info["size"]) or (info.get("sha256") and sha.hexdigest() != info["sha256"]):
         dest.unlink(missing_ok=True)
         raise ValueError("Файл обновления скачался с ошибкой, попробуйте ещё раз")

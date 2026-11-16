@@ -88,6 +88,24 @@ CARDS["lipsync"] = {
 }
 
 
+HYBRID_UNET = "minimax_h3_hybrid_fl2va_ref2va_b25-49-int8.safetensors"
+
+CARDS["actionsc"] = {
+    "title": "Экшн-видеостудия",
+    "text": "Сцены в один ролик: Singularity или Hybrid, DMAD, Speed Slider, по желанию Pika, до 3 аудио-образцов. Ваш workflow «MiniMax H3 Action Scene», считается на видеокарте RunningHub.",
+    "file": "action_scene.json",
+    "need": "изображения героев и места, по желанию аудио",
+    "wf_default": "2122356550684696577",
+    "author": {},
+    "direct": True,   # size and length are written straight into the reference node (width / height / length in frames), there is no resolution node
+    "slots": {"images": {"max": 9, "required": True, "label": "Изображения героев и локации", "node": "100"},
+              "audios": {"max": 3, "required": False, "label": "Аудио (голос, музыка, атмосфера)"}},
+    "nodes": {"prompt": "201", "res": "201", "seed": "204", "speed": "61", "dmad": "60", "refsize": "201", "unet": "1", "pika": "62", "sched": "10"},
+    "dur": [3, 25],
+    "defaults": {"duration": 8, "aspect": "16:9", "mp": 0.9, "speed": 4.0, "dmad": 0.8},
+}
+
+
 CARDS["video"] = {
     "title": "Image-to-Video: видео по тексту и по картинке",
     "text": "Новинка. Видео по описанию, по одной картинке (первый кадр) или между первым и последним кадром, со звуком от модели. Быстрая модель FastH3, 8 шагов.",
@@ -225,9 +243,23 @@ def build(card_id, p, files):
         for nid, key in c["accel"]["consumers"]:
             g[nid]["inputs"][key] = ["acc_sparse", 0]
     lo, hi = c["dur"]
-    g[n["duration"]]["inputs"]["value"] = max(float(lo), min(float(hi), float(p.get("duration") or d["duration"])))
-    g[n["res"]]["inputs"]["aspect_ratio"] = ASPECTS.get(p.get("aspect"), ASPECTS[d["aspect"]])
-    g[n["res"]]["inputs"]["megapixels"] = max(0.3, min(2.1, float(p.get("mp") or d["mp"])))
+    if c.get("direct"):
+        g[n["res"]]["inputs"].update(width=int(p["width"]), height=int(p["height"]), length=int(p["frames"]))
+        hybrid = p.get("model") == "hybrid"
+        if hybrid:
+            g[n["unet"]]["inputs"]["unet_name"] = HYBRID_UNET
+        pika = bool(p.get("pika")) and not hybrid
+        if not pika and n["pika"] in g:   # without Pika the speed LoRA is taken out of the chain (the same as «bypass») and 12 steps are used
+            src = g.pop(n["pika"])["inputs"]["model"]
+            for other in g.values():
+                for k, v in other.get("inputs", {}).items():
+                    if isinstance(v, list) and len(v) == 2 and str(v[0]) == n["pika"]:
+                        other["inputs"][k] = src
+        g[n["sched"]]["inputs"]["steps"] = 8 if pika else 12
+    else:
+        g[n["duration"]]["inputs"]["value"] = max(float(lo), min(float(hi), float(p.get("duration") or d["duration"])))
+        g[n["res"]]["inputs"]["aspect_ratio"] = ASPECTS.get(p.get("aspect"), ASPECTS[d["aspect"]])
+        g[n["res"]]["inputs"]["megapixels"] = max(0.3, min(2.1, float(p.get("mp") or d["mp"])))
     if n.get("speed") and p.get("speed") not in (None, ""):
         g[n["speed"]]["inputs"]["strength_model"] = float(p["speed"])
     if n.get("dmad") and p.get("dmad") not in (None, ""):

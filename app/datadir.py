@@ -50,6 +50,18 @@ def locate(app_dir, local_appdata):
             if (p / "config.json").exists():   # the folder with the settings is still there: use it again
                 cur = p
                 pointer.write_text(str(cur), encoding="utf-8")
+        if cur is None and not (default / "config.json").exists():
+            # neither pointer survived (an update that removed the program folder): look for the settings of an earlier set-up in the usual
+            # install folders, so the user is not taken through the first start and the download of all models again
+            roots = [Path(f"{c}:\\") / "MinimaxH3Workspace" for c in "DEFGHIJKLMNOPQRSTUVWXYZC" if Path(f"{c}:\\").exists()] + [legacy]
+            for r in roots:
+                try:
+                    if (r / "data" / "config.json").exists() and managed_install_dir(r / "data"):
+                        cur = r / "data"
+                        pointer.write_text(str(cur), encoding="utf-8")
+                        break
+                except OSError:
+                    continue
         if cur is None:
             cur = default
             if (legacy / "data").is_dir() and not default.exists():

@@ -313,6 +313,7 @@ class App:
 
     def start_managed(self):
         root = self.comfy_root()
+        engine.disable_duplicate_packs(root / "ComfyUI" / "custom_nodes")
         flags, _err = engine.parse_flags(self.config.get("comfy_flags"))
         self.process = engine.ComfyProcess(root, DATA_DIR / "comfyui.log", flags or [])
         self.process.start()
@@ -508,8 +509,18 @@ class App:
     async def finish_job(self, job):
         pid = job["prompt_id"]
         self.jobs.pop(pid, None)
-        _, hist = await self.comfy_json("GET", f"/history/{pid}")
-        outputs = (hist or {}).get(pid, {}).get("outputs", {})
+        # ComfyUI sends «success» a moment BEFORE it writes the result into its history (it still registers the files); on a busy or
+        # slow machine the first look is empty although the video is already in the output folder: look again for up to ~40 seconds
+        outputs = {}
+        for attempt in range(40):
+            try:
+                _, hist = await self.comfy_json("GET", f"/history/{pid}")
+            except Exception:
+                hist = None
+            outputs = (hist or {}).get(pid, {}).get("outputs", {})
+            if outputs:
+                break
+            await asyncio.sleep(1)
         tagged = [(nid, f) for nid, out in outputs.items() for lst in out.values() if isinstance(lst, list)
                   for f in lst if isinstance(f, dict) and "filename" in f]
         files = [f for _, f in tagged]
@@ -742,6 +753,66 @@ class App:
         except aiohttp.ClientError:
             return web.json_response({"error": "ComfyUI не отвечает"}, status=503)
 
+    async def h_nodes_install(self, req):
+        """Own ComfyUI: put the missing node packs into its custom_nodes (the user gives the folder once; it is remembered).
+        ComfyUI has to be restarted afterwards - it only reads custom_nodes at start."""
+        import zipfile
+        if self.config.get("engine") != "external":
+            return web.json_response({"error": "Эта кнопка только для своего ComfyUI. Во встроенном ноды ставятся сами."}, status=400)
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        raw = str(body.get("dir") or self.config.get("own_comfy_dir") or "").strip().strip('"')
+        if not raw:
+            return web.json_response({"error": "Укажите папку вашего ComfyUI (где лежит папка custom_nodes)."}, status=400)
+        base = Path(raw)
+        nodes_dir = next((c for c in (base / "custom_nodes", base / "ComfyUI" / "custom_nodes") if c.is_dir()), None)
+        if not nodes_dir:
+            return web.json_response({"error": "В этой папке нет custom_nodes. Укажите папку ComfyUI, в которой лежит custom_nodes (у портативной версии это ComfyUI_windows_portable\\ComfyUI)."}, status=400)
+        try:
+            missing = {n["pack"] for n in await self.nodes_status() if not n["have"]}
+        except aiohttp.ClientError:
+            return web.json_response({"error": "ComfyUI не отвечает: запустите его, чтобы программа увидела, каких нод не хватает."}, status=503)
+        packs = [p for p in catalog.NODE_PACKS if p["name"] in missing]
+        py = next((c for c in (nodes_dir.parent.parent / "python_embeded" / "python.exe", nodes_dir.parent / "python_embeded" / "python.exe") if c.exists()), None)
+        done, skipped, failed = [], [], []
+        for pack in packs:
+            target = nodes_dir / pack["name"]
+            if target.exists():
+                skipped.append(pack["name"])   # the folder is there, ComfyUI just has not loaded it: a restart is needed
+                continue
+            zpath = nodes_dir.parent / f'_h3_{pack["name"]}.zip'
+            ok = False
+            for url in (f'https://github.com/{pack["repo"]}/archive/{pack["commit"]}.zip',
+                        f'https://codeload.github.com/{pack["repo"]}/zip/{pack["commit"]}'):
+                try:
+                    async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=300)) as r:
+                        if r.status != 200:
+                            continue
+                        zpath.write_bytes(await r.read())
+                    with zipfile.ZipFile(zpath) as z:
+                        top = z.namelist()[0].split("/")[0]
+                        z.extractall(nodes_dir)
+                    (nodes_dir / top).rename(target)
+                    ok = True
+                    break
+                except Exception as e:
+                    print(f"Нода {pack['name']}: {type(e).__name__}: {e}", file=sys.stderr)
+            zpath.unlink(missing_ok=True)
+            if not ok:
+                failed.append(pack["name"])
+                continue
+            done.append(pack["name"])
+            req_txt = target / "requirements.txt"
+            if py and req_txt.exists() and req_txt.read_text(encoding="utf-8", errors="ignore").strip():
+                proc = await asyncio.create_subprocess_exec(str(py), "-s", "-m", "pip", "install", "-r", str(req_txt),
+                                                            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                                                            creationflags=engine.CREATE_NO_WINDOW)
+                await proc.wait()
+        self.config.update(own_comfy_dir=raw)
+        return web.json_response({"ok": not failed, "installed": done, "need_restart": skipped, "failed": failed, "pip": bool(py)})
+
     async def h_models_files(self, req):
         """Files ComfyUI sees in the folder this model role lives in, for picking one by hand."""
         role = req.query.get("role", "")
@@ -919,14 +990,18 @@ class App:
         return web.json_response({**{k: v for k, v in info.items() if k not in ("asset", "sha256")},
                                   "can_update": updater.can_update()})
 
+    async def h_update_progress(self, _req):
+        return web.json_response(getattr(self, "update_prog", None) or {"done": 0, "total": 0})
+
     async def h_update_install(self, _req):
         info = getattr(self, "update_info", None)
         if not info or not updater.can_update():
             raise web.HTTPBadRequest(text="Обновление недоступно")
         if self.jobs:
             raise web.HTTPConflict(text="Сейчас идёт генерация. Дождитесь её конца и нажмите «Обновить» снова.")
+        self.update_prog = {"done": 0, "total": int(info.get("size") or 0)}
         try:
-            installer = await updater.download(self.session, info)
+            installer = await updater.download(self.session, info, self.update_prog)
         except Exception as e:
             raise web.HTTPBadGateway(text=str(e))
         updater.run(installer)
@@ -1353,6 +1428,37 @@ class App:
             return web.json_response({"error": "ComfyUI не запустился с этими флагами, они сброшены. " + str(e)[-400:]}, status=500)
         return web.json_response({"ok": True, "saved": text, "applied": True})
 
+    async def h_nodes_fix(self, _req):
+        """Built-in ComfyUI: download the node packs it lacks (the ones the program needs), then restart ComfyUI."""
+        if self.config.get("engine") != "managed":
+            return web.json_response({"error": "Эта кнопка только для встроенного ComfyUI."}, status=400)
+        if self.installer or getattr(self, "comfy_updating", False):
+            return web.json_response({"error": "Сейчас идёт установка или обновление. Дождитесь конца."}, status=409)
+        root = self.comfy_root()
+        before = set(self.missing_node_packs())
+        self.comfy_updating = True
+        try:
+            if self.process:
+                await asyncio.to_thread(self.process.stop)
+
+            async def quiet(_ev):
+                pass
+            err = None
+            try:
+                await engine.Installer(ROOT, self.session, quiet).install_nodes(root)
+            except Exception as e:
+                err = f"{type(e).__name__}: {e}"
+            self.start_managed()
+            try:
+                await self.wait_comfy()
+            except Exception as e:
+                return web.json_response({"error": "ComfyUI не запустился после установки нод. " + str(e)[-400:]}, status=500)
+            if err:
+                return web.json_response({"error": "Не удалось скачать ноды (проверьте интернет): " + err[-300:]}, status=502)
+            return web.json_response({"ok": True, "installed": sorted(before - set(self.missing_node_packs()))})
+        finally:
+            self.comfy_updating = False
+
     async def h_comfy_update(self, _req):
         """«Обновить ComfyUI»: runs the portable build's own update_comfyui.bat (the plain one: NOT _stable and NOT
         _and_python_dependencies, which can swap PyTorch for a CPU build and leave ComfyUI unable to start)."""
@@ -1495,7 +1601,7 @@ class App:
             return web.json_response({"error": f"Неверные значения: {e}"}, status=400)
         return await self.rh_launch(rh, cid, graph, seed, wf_id, form.get("instance"), form.get("prompt", ""), form.get("aspect", "16:9"), form.get("duration"))
 
-    async def rh_launch(self, rh, cid, graph, seed, wf_id, inst, prompt, aspect, duration, final_mp=None, sub=None):
+    async def rh_launch(self, rh, cid, graph, seed, wf_id, inst, prompt, aspect, duration, final_mp=None, sub=None, extra=None):
         """Send a ready graph of a library card to RunningHub and watch the task."""
         inst = inst if inst in cloud.INSTANCE_TYPES else "default"
         ids = dict(self.config.get("rh_cards") or {})
@@ -1517,6 +1623,8 @@ class App:
                 "rh": {"card": rhlib.CARDS[cid]["title"], "gpu": {"default": "24 ГБ", "plus": "48 ГБ", "ultra": "84 ГБ"}.get(inst, inst),
                        "mp": mp, "mult": graph[rhlib.CARDS[cid]["nodes"]["res"]]["inputs"].get("multiple", 32), "task": task, "bal0": bal0,
                        "t0": datetime.now().timestamp(), "wf": wf_id, "out": rhlib.CARDS[cid].get("out")}}
+        if extra:
+            meta.update(extra)
         self.jobs[pid] = {"prompt_id": pid, "state": "queued", "stages": {}, "stage": None, "meta": meta, "task": task}
         asyncio.create_task(self.poll_cloud(rh, pid))
         return web.json_response({"prompt_id": pid, "seed": seed})
@@ -1551,7 +1659,7 @@ class App:
         rh = self.rh_client()
         if not rh:
             return web.json_response({"error": "Сначала вставьте API-ключ RunningHub и нажмите «Сохранить»"}, status=400)
-        fields = ("img0", "img1", "img2", "img3", "img4", "aud0") + tuple(f"simg{i}_{j}" for i in range(12) for j in range(5))
+        fields = ("img0", "img1", "img2", "img3", "img4", "aud0", "aud1", "aud2") + tuple(f"simg{i}_{j}" for i in range(12) for j in range(5))
         try:
             form, files, _p, aspect, quality, seed = await self.read_form(req, fields, need_prompt=False, rh=rh)
         except cloud.CloudError as e:
@@ -1566,32 +1674,43 @@ class App:
         scenes = [(p, max(1.0, min(15.0, sec)), i) for p, sec, i in raw if p][:12]
         if not scenes:
             return web.json_response({"error": "Напишите хотя бы одну сцену"}, status=400)
-        total = sum(sec for _, sec, _ in scenes)
+        part = form.get("part", "").strip()
+        one = None
+        if part.isdigit():   # one scene alone (the «Сделать эту сцену» button): every scene is a separate task on RunningHub, nothing is continued
+            one = next((x for x in scenes if x[2] == int(part)), None)
+            if not one:
+                return web.json_response({"error": "Эта сцена пустая: напишите для неё текст"}, status=400)
+        total = one[1] if one else sum(sec for _, sec, _ in scenes)
         if total > 25.5:
             return web.json_response({"error": f"На RunningHub весь ролик одним заданием не длиннее 25 секунд (у вас {total:.0f} с). Сократите сцены."}, status=400)
         parts, t = [], 0.0
-        for k, (p, sec, _i) in enumerate(scenes):
+        for k, (p, sec, _i) in enumerate([one] if one else scenes):
             parts.append(p if k == 0 else f"[Shot {k + 1}] At {int(t // 60):02d}:{t % 60:06.3f}, a new plan: {p}")
             t += sec
         images = [files[f"img{i}"] for i in range(5) if f"img{i}" in files]
-        images += [files[f"simg{i}_{j}"] for _p, _s, i in scenes for j in range(5) if f"simg{i}_{j}" in files]
+        images += [files[f"simg{i}_{j}"] for _p, _s, i in ([one] if one else scenes) for j in range(5) if f"simg{i}_{j}" in files]
         images = images[:9]
         if not images:
             return web.json_response({"error": "Добавьте хотя бы одно изображение героя или локации"}, status=400)
         rfiles = {f"img{i}": n for i, n in enumerate(images)}
-        if files.get("aud0"):
-            rfiles["aud0"] = files["aud0"]
+        for i in range(3):
+            if files.get(f"aud{i}"):
+                rfiles[f"aud{i}"] = files[f"aud{i}"]
         ref_size = form.get("ref_size") if form.get("ref_size") in ("match", "max") else "max"
         dmad, speed = lora_strength(form, "dmad", 0.8), lora_strength(form, "speed", 4.0)
-        mp = round(wf.QUALITY[quality] / 1048576, 3)
+        width, height = wf.resolution(aspect, quality, form)
+        amodel = "hybrid" if form.get("amodel") == "action" else "sing"   # the same two buttons as in the local studio
         text = "\n\n".join(parts)
         try:
-            graph, seed = rhlib.build("action", {"prompt": wf.lipsync_prompt(text, len(images)), "duration": total, "aspect": aspect, "mp": mp,
-                                                 "ref_size": ref_size, "seed": seed, "dmad": 0.0 if dmad is None else dmad,
-                                                 "speed": 0.0 if speed is None else speed}, rfiles)
+            graph, seed = rhlib.build("actionsc", {"prompt": wf.lipsync_prompt(text, len(images)), "width": width, "height": height,
+                                                   "frames": wf.frames(total), "model": amodel, "pika": form.get("apika") == "1",
+                                                   "ref_size": ref_size, "seed": seed, "dmad": 0.0 if dmad is None else dmad,
+                                                   "speed": 0.0 if speed is None else speed}, rfiles)
         except (ValueError, KeyError) as e:
             return web.json_response({"error": f"Неверные значения: {e}"}, status=400)
-        return await self.rh_launch(rh, "action", graph, seed, wf_id, form.get("instance"), text, aspect, total)
+        return await self.rh_launch(rh, "actionsc", graph, seed, wf_id, form.get("instance"), text, aspect, total, final_mp=width * height / 1048576,
+                                    sub=(f"экшн · сцена {int(part) + 1} из {len(raw)} · RunningHub" if one else None),
+                                    extra=({"long": {"run": form.get("run", ""), "part": int(part), "n": len(raw), "draft": False, "test": False, "kind": "action"}} if one else None))
 
     async def h_generate_rhlipsync(self, req):
         """The «Lipsync» page of the RunningHub library: the same form as the local page (the audio clip is already cut there)."""
@@ -1866,6 +1985,9 @@ class App:
         if not self.model_names:
             await self.resolve_models()
         lost = [m["file"] for m in self.missing if m["role"] in catalog.MODE_ROLES[mode]]
+        if lost:  # the answer may be stale (ComfyUI was still starting, files finished downloading later): ask ComfyUI again before refusing
+            await self.resolve_models()
+            lost = [m["file"] for m in self.missing if m["role"] in catalog.MODE_ROLES[mode]]
         if lost:
             raise web.HTTPBadRequest(text="ComfyUI не видит модели: " + ", ".join(lost)
                                      + ". Откройте раздел «Настройки».")
@@ -2620,7 +2742,7 @@ class App:
                 self._long_run = None
 
     async def generate_long(self, req):
-        form, files, prompt, aspect, quality, seed = await self.read_form(req, ("img0", "img1", "img2", "img3", "img4", "aud0", "srcvid") + tuple(f"simg{i}_{j}" for i in range(12) for j in range(5)), need_prompt=False)   # the texts are in the scenes, there is no single prompt
+        form, files, prompt, aspect, quality, seed = await self.read_form(req, ("img0", "img1", "img2", "img3", "img4", "aud0", "aud1", "aud2", "srcvid") + tuple(f"simg{i}_{j}" for i in range(12) for j in range(5)), need_prompt=False)   # the texts are in the scenes, there is no single prompt
         self._long_run = re.sub(r"[^A-Za-z0-9]", "", form.get("run", ""))[:32]   # the references are kept even if the request is refused later
         try:
             scenes = [(str(x.get("prompt", "")).strip(), float(x.get("sec", 10)), bool(x.get("fresh"))) for x in json.loads(form.get("scenes") or "[]")]
@@ -2657,7 +2779,8 @@ class App:
         if not scenes:
             raise web.HTTPBadRequest(text="Напишите хотя бы одну сцену")
         images = [files[f"img{i}"] for i in range(5) if f"img{i}" in files]
-        audio = files.get("aud0")
+        audio = None if action else files.get("aud0")   # the action studio takes up to 3 audio SAMPLES instead of one track
+        auds = [files[f"aud{i}"] for i in range(3) if f"aud{i}" in files] if action else []
         try:
             start = max(0.0, float(form.get("start") or 0))
         except ValueError:
@@ -2724,10 +2847,10 @@ class App:
                 # like the Video studio: one pass at full size, the continuation is kept by a noise mask (SelfLift cannot take such a mask)
                 graph, stages = wf.action_part_graph(self.model_names, scenes, k, width, height, seed, images, a_loras,
                                                      await self.preview_opts("action") if form.get("preview") != "0" else None, state, fresh,
-                                                     False, None, True, sing, a_steps)
+                                                     False, None, True, sing, a_steps, None, start, None, auds)
                 plan = wf.long_plan([sc[1] for sc in scenes], fresh=fresh)
                 return await self.queue(graph, stages, {
-                    "mode": "long", "sub": f"экшн · сцена {k + 1} из {len(scenes)}" + (f" · проба {width}×{height}" if test else ""),
+                    "mode": "long", "sub": f"экшн · сцена {k + 1} из {len(scenes)}" + (f" · аудио-образцов: {len(auds)}" if auds else "") + (f" · проба {width}×{height}" if test else ""),
                     "prompt": scenes[k][0], "aspect": aspect, "q": quality,
                     "len": round((plan[k]["total"] - plan[k]["ov"]) / wf.FPS, 1), "res": f"{width}×{height}", "seed": seed,
                     "long": {"run": run, "part": k, "n": len(scenes), "draft": False, "test": test, "kind": "action"}})
@@ -3873,7 +3996,10 @@ def build_app(comfy_override=None):
         web.post("/api/grain", state.h_grain),
         web.get("/api/version", lambda _req: web.json_response({"version": APP_VERSION,
                                                                  "built": build_stamp()})),
+        web.post("/api/nodes/install", state.h_nodes_install),
+        web.post("/api/nodes/fix", state.h_nodes_fix),
         web.get("/api/update/check", state.h_update_check),
+        web.get("/api/update/progress", state.h_update_progress),
         web.post("/api/update/install", state.h_update_install),
         web.post("/api/generate/qwen", state.h_generate_qwen),
         web.post("/api/generate/inpaint", state.h_generate_inpaint),

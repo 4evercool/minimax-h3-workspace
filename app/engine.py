@@ -251,6 +251,7 @@ class Installer:
         return root
 
     async def install_nodes(self, comfy_root):
+        disable_duplicate_packs(comfy_root / "ComfyUI" / "custom_nodes")
         nodes_dir = comfy_root / "ComfyUI" / "custom_nodes"
         for i, pack in enumerate(catalog.NODE_PACKS):
             target = nodes_dir / pack["name"]
@@ -335,6 +336,24 @@ class Installer:
                 self.emit = original_emit
             done_before += m["size"]
         await self.step("models", "done", label="Все модели на месте")
+
+
+def disable_duplicate_packs(nodes_dir):
+    """Two copies of one node pack (the app's folder and, say, «ComfyUI-KJNodes-main» from a manual download) register the same ComfyUI route:
+    ComfyUI then does not start («Added route will never be executed»). The extra copy gets «.disabled» (ComfyUI skips such folders)."""
+    nodes_dir = Path(nodes_dir)
+    if not nodes_dir.is_dir():
+        return
+    for pack in catalog.NODE_PACKS:
+        if not (nodes_dir / pack["name"]).is_dir():
+            continue
+        for suffix in ("-main", "-master", "-" + pack["commit"], "-" + pack["commit"][:7]):
+            extra = nodes_dir / (pack["name"] + suffix)
+            if extra.is_dir():
+                try:
+                    extra.rename(extra.with_name(extra.name + ".disabled"))
+                except OSError:
+                    pass
 
 
 # ---------- managed ComfyUI process ----------
