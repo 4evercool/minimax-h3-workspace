@@ -474,6 +474,35 @@ textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft
 .seg button small{font-weight:500;font-size:11px;color:var(--dim)}
 .seg button.on{background:var(--grad);color:#fff;box-shadow:0 6px 18px rgba(var(--accent-rgb),.3)}
 .seg button.on small{color:rgba(255,255,255,.8)}
+.up-tabs{display:flex;gap:6px;margin-top:16px;padding:5px;border-radius:14px;background:var(--surface-2)}
+.up-t{flex:1;display:grid;gap:2px;justify-items:center;padding:10px 8px;border:0;border-radius:10px;background:transparent;color:inherit;font:inherit;cursor:pointer;transition:.15s}
+.up-t b{font-size:14px}.up-t small{font-size:11.5px;color:var(--muted)}
+.up-t:hover{background:var(--surface)}
+.up-t.on{background:var(--surface);box-shadow:0 2px 10px rgba(0,0,0,.25);outline:2px solid var(--accent)}
+.up-p[hidden]{display:none}
+.dl-help{margin-top:12px;padding:14px 16px;border-radius:14px;background:var(--surface-2);font-size:13px;line-height:1.55}
+.dl-help ol{margin:8px 0 10px;padding-left:20px;display:grid;gap:6px}
+.dl-help small{display:block;margin-top:10px;color:var(--muted);font-size:11.5px}
+.dl-hb{display:flex;gap:8px;flex-wrap:wrap}
+/* DLSS 5 block in the enlarge window: soft card, two-column grid, no hard frames */
+.dl{margin-top:16px}
+.dl>summary{cursor:pointer;font-weight:800;font-size:15px;list-style:none;display:flex;align-items:center;gap:10px}
+.dl>summary::-webkit-details-marker{display:none}
+.dl>summary em{font-style:normal;font-size:11px;font-weight:700;padding:3px 9px;border-radius:99px;background:var(--accent-soft);color:var(--accent)}
+.dl-note{font-size:12.5px;color:var(--muted);line-height:1.5;margin:10px 0 4px}
+.dl-g{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px 20px;margin-top:14px}
+.dl-f{display:grid;gap:7px;align-content:start}
+.dl-f label{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;font-weight:700}
+.dl-f output{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--accent);background:var(--accent-soft);padding:1px 8px;border-radius:99px}
+.dl-f small,.dl-c small{font-size:11.5px;color:var(--muted);font-weight:400}
+.dl-in{width:100%;box-sizing:border-box;background:var(--surface);color:inherit;border:1px solid transparent;border-radius:11px;padding:10px 12px;font:inherit;font-size:13px;outline:none;transition:.15s}
+.dl-in:hover{border-color:var(--line-2)}
+.dl-in:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+select.dl-in{-webkit-appearance:none;appearance:none;padding-right:34px;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' fill='none' stroke='%23999' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M1 1.5l5 5 5-5'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 13px center}
+.dl-r{height:5px}
+.dl-c{display:flex;gap:11px;align-items:flex-start;padding:10px 12px;border-radius:11px;background:var(--surface);cursor:pointer;font-size:13px}
+.dl-c input{width:18px;height:18px;margin:1px 0 0;accent-color:var(--accent);flex:none}
+.dl-c span{display:grid;gap:2px}
 input[type=range]{-webkit-appearance:none;width:100%;height:6px;border-radius:9px;background:linear-gradient(90deg,var(--accent) var(--p,15%),var(--surface-2) var(--p,15%));outline:none}
 input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;background:#fff;border:4px solid var(--accent);box-shadow:0 2px 10px rgba(0,0,0,.4)}
 .ticks{display:flex;justify-content:space-between;font-size:11px;color:var(--dim);font-family:var(--mono)}
@@ -6278,6 +6307,7 @@ async function openUpscale(it, file) {   // `file`: any file of the user (not fr
   const st = await (await fetch('/api/status')).json();
   const have = (st.modes || []).includes('upscale') && !(st.models || []).some(m => m.role.startsWith('seedvr') && !m.have);
   const haveRelay = (st.modes || []).includes('relayvsr') && !(st.models || []).some(m => m.role.startsWith('relayvsr') && !m.have);
+  let dlHave = true, dlInfo = {}; try { const dc = await (await fetch('/api/dlss_check')).json(); dlHave = it.kind === 'image' ? dc.image : dc.video; dlInfo = dc; } catch {}
   const relayOld = comfyOld(st.comfy_version), gbV = st.vram_total ? st.vram_total / 1073741824 : 0;   // an old ComfyUI has no RelayVSR node; 8 GB is the edge for SeedVR2
   let m = $('#upMenu');
   if (!m) { m = document.createElement('div'); m.className = 'modal'; m.id = 'upMenu'; document.body.append(m); }
@@ -6286,29 +6316,64 @@ async function openUpscale(it, file) {   // `file`: any file of the user (not fr
   const est = sc => (w && h ? (w * sc) * (h * sc) / 1048576 : 1.4) * (it.kind === 'image' ? 1 : Math.round(secs * 24)) * 3.24;  // seconds, measured on an RTX 4060 Ti 16 GB
   const opt = (k, name) => { const out = w ? `${Math.round(w * k / 2) * 2}×${Math.round(h * k / 2) * 2}` : '';
     return `<button class="btn up-s" data-k="${k}" type="button">${name}${out ? ` · ${out}` : ''}<small style="display:block;opacity:.7">примерно ${fmtTime(est(k))} на видеокарте уровня RTX 4060 Ti, у слабой — дольше</small></button>`; };
-  m.innerHTML = `<div class="box" style="padding:20px;max-width:460px"><div class="card-h"><h3>${it.kind === 'image' ? 'Увеличить изображение' : 'Увеличить видео'}</h3><button class="btn" data-x type="button">Закрыть</button></div>`
+  m.innerHTML = `<div class="box" style="padding:22px;max-width:720px;width:calc(100vw - 32px)"><div class="card-h"><h3>${it.kind === 'image' ? 'Увеличить изображение' : 'Увеличить видео'}</h3><button class="btn" data-x type="button">Закрыть</button></div>`
     + (it.kind === 'image'
       ? `<div class="note"><span>Изображение станет крупнее и чётче (с деталями). Это занимает от десятков секунд до нескольких минут. Задание пойдёт в очередь, а готовое изображение появится в Библиотеке отдельным файлом, исходная останется.</span></div>`
       : `<div class="note"><span>Видео станет крупнее и чётче, звук останется прежним. Это долго: от нескольких минут до часа на видео. Задание пойдёт в очередь, вы можете заниматься другим, а готовое видео появится в Библиотеке отдельным файлом. Если ждать не хочется — просто закройте это окно.</span></div>`)
     + (it.kind !== 'image' && gbV && gbV <= 8.5 ? `<div class="note warn" style="margin-top:10px"><span><b>У вас ${Math.round(gbV)} ГБ видеопамяти.</b> Для увеличения это на пределе: «в 2 раза» (SeedVR2) на таком объёме часто не помещается. Выбирайте <b>«в 1,5 раза»</b> или быстрый вариант, а видео берите короче и меньше. Закройте остальные программы, которым нужна видеокарта.</span></div>` : '')
-    + (it.kind === 'image' ? '' : (() => {   // two ways for a video: fast (RelayVSR) and careful (SeedVR2)
+    + `<div class="up-tabs">${it.kind === 'image' ? '' : '<button type="button" class="up-t" data-t="relay"><b>⚡ Быстро</b><small>RelayVSR · в 2 раза</small></button>'}<button type="button" class="up-t" data-t="seed"><b>✨ Качественно</b><small>SeedVR2 · долго</small></button><button type="button" class="up-t" data-t="dlss"><b>🕹️ DLSS 5</b><small>реализм лица и света</small></button></div>`
+    + (it.kind === 'image' ? '' : (() => {   // fast (RelayVSR) pane
       const relayT = (w && h ? (w * 2) * (h * 2) / 1048576 / 4 : 0.9) * Math.round(secs * 24) * 0.7;   // seconds; an estimate for an RTX 4060 Ti (the author's 5090 is ~3.5x faster)
       const tooBig = w && h && w * h * secs > 16 * 1376 * 768;
-      return `<div style="margin-top:14px;padding:12px;border:1.5px solid var(--line-2);border-radius:12px"><div style="font-weight:800;font-size:15px;margin-bottom:4px">⚡ Быстро — RelayVSR, в 2 раза${w ? ` · ${w * 2}×${h * 2}` : ''}</div>`
+      return `<div class="up-p" data-p="relay"><div style="margin-top:14px"><div style="font-weight:800;font-size:15px;margin-bottom:4px">⚡ Быстро — RelayVSR, в 2 раза${w ? ` · ${w * 2}×${h * 2}` : ''}</div>`
         + `<div class="hint" style="margin-bottom:8px">Примерно ${fmtTime(relayT)} на RTX 4060 Ti (оценка). Видео не длиннее ~15 с при 1376×768: оно целиком грузится в память.${tooBig ? ' <b style="color:var(--pink)">Это видео для быстрого варианта слишком большое.</b>' : ''}${relayOld ? ` <b style="color:var(--pink)">Нужен ComfyUI 0.45.0 или новее (у вас ${esc(st.comfy_version || '?')}): обновите его в Настройках, блок «Движок».</b>` : ''}</div>`
         + (haveRelay ? `<label style="display:block;font-size:13px;margin-bottom:8px"><b>Детали: <span id="upDetailV">70</span>%</b> <span class="hint">меньше — мягче, без пересвета лиц; больше — чётче</span><input type="range" id="upDetail" min="0" max="100" step="5" value="70" style="width:100%"></label><button class="btn pri up-s" data-e="relay" data-k="2" type="button"${tooBig || relayOld ? ' disabled' : ''}>Увеличить быстро</button>`
           : `<div class="hint" style="margin-bottom:8px">Нужна модель RelayVSR (около 5,3 ГБ).${st.engine === 'managed' ? '' : ' В своём ComfyUI положите relayvsr_x2_lightx2v_int8_convrot в diffusion_models и relayvsr_flash_vae_x2_fp32 в vae.'}</div>`
             + (st.engine === 'managed' ? '<button class="btn pri" data-dl="relayvsr" type="button">Скачать модель</button>' : '')) + '</div>'
-        + `<div style="font-weight:800;font-size:15px;margin:14px 0 4px">✨ Качественнее — SeedVR2 (долго)</div>`;
+        + '</div>';
     })())
+    + (() => {   // DLSS 5 mini editor (unofficial node of the user's own ComfyUI)
+      const sel = (id, name, lst, d) => `<div class="dl-f"><label for="${id}">${name}</label><select id="${id}" class="dl-in">${lst.map(x => `<option${x === d ? ' selected' : ''}>${x}</option>`).join('')}</select></div>`;
+      const sl = (id, name, lo, hi, step, d, hint) => `<div class="dl-f"><label for="${id}">${name}<output id="${id}V">${d}</output></label><input type="range" class="dl-r" id="${id}" min="${lo}" max="${hi}" step="${step}" value="${d}" style="--p:${(d - lo) / (hi - lo) * 100}%">${hint ? `<small>${hint}</small>` : ''}</div>`;
+      const num = (id, name, lo, hi, d, hint) => `<div class="dl-f"><label for="${id}">${name}</label><input type="number" class="dl-in" id="${id}" min="${lo}" max="${hi}" value="${d}">${hint ? `<small>${hint}</small>` : ''}</div>`;
+      const chk = (id, name, on, hint) => `<label class="dl-c"><input type="checkbox" id="${id}"${on ? ' checked' : ''}><span><b>${name}</b>${hint ? `<small>${hint}</small>` : ''}</span></label>`;
+      return `<div class="up-p dl" data-p="dlss" hidden><div style="font-weight:800;font-size:15px">🕹️ DLSS 5: реализм лица и света <em>только RTX</em></div>`
+        + (dlHave ? `<p class="dl-note">Только улучшает картинку, звук видео остаётся прежним. Нужна видеокарта RTX.</p>`
+          : `<div class="dl-help"><b>Чтобы DLSS заработал, нужно поставить его самим (программа чужие файлы не качает):</b>
+            <ol><li>Нажмите «Страница узла», скачайте последний архив <i>ComfyUI-DLSS5-Ox-…-windows-x64.zip</i> (не «Source code»).</li>
+            <li>Распакуйте его в папку <i>custom_nodes</i> (кнопка «Открыть custom_nodes»), чтобы получилась папка <i>ComfyUI-DLSS5-orex</i>.</li>
+            <li>Скачайте файл <i>nvngx_dlssnr.dll</i> (кнопка «Файл NVIDIA», ссылка из инструкции автора узла) и положите его в подпапку <i>runtime</i> (кнопка «Открыть runtime»). Это сторонний файл NVIDIA: программа его не проверяла и за него не отвечает, скачивайте на свой риск и только если у вас есть на это право.${dlInfo.pack_dir && !dlInfo.runtime_file ? ' <b>Узел у вас уже есть, не хватает именно этого файла.</b>' : ''}</li>
+            <li>Закройте программу и откройте снова, чтобы ComfyUI перезапустился. Затем откройте это окно.</li></ol>
+            <div class="dl-hb"><button type="button" class="btn" data-dlo="github">Страница узла</button><button type="button" class="btn" data-dlo="folder">Открыть custom_nodes</button><button type="button" class="btn" data-dlo="dll">Файл NVIDIA</button>${dlInfo.pack_dir ? '<button type="button" class="btn" data-dlo="runtime">Открыть runtime</button>' : ''}</div>
+            <small>Узел сторонний и экспериментальный, нужна видеокарта RTX. Программа за него и за файл NVIDIA не отвечает.</small></div>`)
+        + `<div class="dl-g">` + sel('dlMode', 'Режим размера', ['1x (DLAA / native)', '1.5x (Quality)', '1.724x (Balanced)', '2x (Performance)', '3x (Ultra Performance)'], '1.5x (Quality)')
+        + sel('dlPreset', 'Модель DLSS', ['Default', 'J', 'K', 'L', 'M'], 'M')
+        + sel('dlStyle', 'Стиль', ['natural', 'cinematic', 'default'], 'natural')
+        + sel('dlTemp', 'Стабильность между кадрами', ['auto', 'none'], 'auto') + `</div>`
+        + `<div class="dl-g">` + sl('dlInt', 'Сила', 0, 2, 0.05, 1, 'общая сила эффекта')
+        + sl('dlTone', 'Тон', 0, 2, 0.05, 2, 'свет и цвет')
+        + sl('dlStruct', 'Структура', 0, 2, 0.05, 2, 'детали и текстуры')
+        + sl('dlSkin', 'Кожа', -1, 2, 0.05, 2, 'лица и кожа')
+        + sl('dlScene', 'Порог смены сцены', 0.01, 1, 0.01, 0.24, '') + `</div>`
+        + `<div class="dl-g">` + num('dlWarm', 'Разогрев, кадров', 0, 16, 0, '')
+        + num('dlChunk', 'Кадров за раз', 0, 256, 8, 'меньше — меньше памяти; 0 — всё сразу')
+        + num('dlChange', 'Кадр смены', 0, 100000, 0, '0 — не используется') + `</div>`
+        + `<div class="dl-g">` + chk('dlMask', 'Авто-маска', false, '') + chk('dlGpu', 'Считать на видеокарте', true, '') + `</div>`
+        + `<button class="btn pri up-s" data-e="dlss" data-k="1" type="button"${dlHave ? '' : ' disabled'} style="margin-top:14px;width:100%">Применить DLSS 5</button></div>`;
+    })()
+    + '<div class="up-p" data-p="seed" hidden><div style="font-weight:800;font-size:15px;margin-top:14px">✨ Качественно — SeedVR2 (долго)</div>'
     + (have && it.kind === 'image' ? (() => { const k2 = w ? Math.max(1, 2048 / Math.max(w, h)) : 1.5; const tw = w ? Math.round(w * k2 / 2) * 2 : 0, th = w ? Math.round(h * k2 / 2) * 2 : 0;
         return `<div style="display:grid;gap:10px;margin-top:14px"><button class="btn pri up-s" data-k="2k" data-m="soft2k" type="button">До 2К, мягко${tw ? ` · ${tw}×${th}` : ''}<small style="display:block;opacity:.8">добавляет чёткость, но без «цифровой» резкости; быстро</small></button></div>`; })() : '')
     + (have ? `<label style="display:block;font-size:13px;margin-top:10px"><b>Чёткость: <span id="upSharpV">100</span>%</b> <span class="hint">меньше — мягче, ближе к обычному увеличению; 100 — как есть</span><input type="range" id="upSharp" min="0" max="100" step="5" value="100" style="width:100%"></label><div style="display:grid;gap:10px;margin-top:14px">${opt(1.5, (it.kind === 'image' ? 'Чётче (SeedVR2): ' : '') + 'Увеличить в 1,5 раза')}${opt(2, (it.kind === 'image' ? 'Чётче (SeedVR2): ' : '') + 'Увеличить в 2 раза')}</div>`
       : (`<div class="hint" style="margin:14px 0">Для этого нужна модель SeedVR2 (около 4 ГБ). ${st.engine === 'managed' ? 'Нажмите, чтобы скачать, и вернитесь сюда.' : 'Если файлов seedvr2_3b_int8_convrot и seedvr2_ema_vae_fp16 нет в вашем ComfyUI, положите их в его папки моделей.'}</div>`
-        + (st.engine === 'managed' ? '<button class="btn pri" data-dl type="button">Скачать модель</button>' : ''))) + '</div>';
-  m.oninput = e => { if (e.target.id === 'upDetail') $('#upDetailV', m).textContent = e.target.value; if (e.target.id === 'upSharp') $('#upSharpV', m).textContent = e.target.value; };
+        + (st.engine === 'managed' ? '<button class="btn pri" data-dl type="button">Скачать модель</button>' : ''))) + '</div></div>';
+  const pane = t => { m.querySelectorAll('.up-p').forEach(x => x.hidden = x.dataset.p !== t); m.querySelectorAll('.up-t').forEach(x => x.classList.toggle('on', x.dataset.t === t)); };
+  pane(it.kind !== 'image' ? 'relay' : 'seed');
+  m.oninput = e => { if (e.target.id === 'upDetail') $('#upDetailV', m).textContent = e.target.value; if (e.target.id === 'upSharp') $('#upSharpV', m).textContent = e.target.value; const dv = $('#' + e.target.id + 'V', m); if (dv && e.target.id.startsWith('dl')) dv.textContent = e.target.value; if (e.target.classList.contains('dl-r')) e.target.style.setProperty('--p', (e.target.value - e.target.min) / (e.target.max - e.target.min) * 100 + '%'); };
   m.onclick = async e => {
     if (e.target === m || e.target.closest('[data-x]')) { m.hidden = true; return; }
+    const tb = e.target.closest('.up-t'); if (tb) { pane(tb.dataset.t); return; }
+    const dlo = e.target.closest('[data-dlo]'); if (dlo) { try { await postJSON('/api/dlss_open', { what: dlo.dataset.dlo }); } catch (err) { toast(err.message); } return; }
     if (e.target.closest('[data-dl]')) {
       m.hidden = true; closeViewer();
       if (!setupInfo) setupInfo = await (await fetch('/api/setup/info')).json();
@@ -6318,17 +6383,22 @@ async function openUpscale(it, file) {   // `file`: any file of the user (not fr
     }
     const b = e.target.closest('.up-s'); if (!b) return;
     const detail = ($('#upDetail', m) ? +$('#upDetail', m).value : 70) / 100, sharp = ($('#upSharp', m) ? +$('#upSharp', m).value : 100) / 100;
+    const g = id => $('#' + id, m);
+    const dlss = b.dataset.e === 'dlss' ? { upscaling_mode: g('dlMode').value, dlss_model_preset: g('dlPreset').value, style: g('dlStyle').value,
+      intensity: +g('dlInt').value, tone: +g('dlTone').value, structure: +g('dlStruct').value, skin: +g('dlSkin').value, auto_mask: g('dlMask').checked,
+      temporal_mode: g('dlTemp').value, scene_change_threshold: +g('dlScene').value, warmup_frames: +g('dlWarm').value, gpu_mode: g('dlGpu').checked,
+      chunk_frames: +g('dlChunk').value, change_frame: +g('dlChange').value } : null;
     try {
       let r;
       if (file) {
-        const fd = new FormData(); fd.append('scale', b.dataset.k); fd.append('method', b.dataset.m || ''); fd.append('engine', b.dataset.e || '');
+        const fd = new FormData(); if (dlss) fd.append('dlss', JSON.stringify(dlss)); fd.append('scale', b.dataset.k); fd.append('method', b.dataset.m || ''); fd.append('engine', b.dataset.e || '');
         fd.append('detail', detail); fd.append('sharp', sharp);
         fd.append('res', it.res || ''); fd.append('len', it.len || 0); fd.append('file', file);
         const resp = await fetch('/api/upscale_file', { method: 'POST', body: fd }); const txt = await resp.text();
         let j; try { j = JSON.parse(txt); } catch { j = { error: txt }; }
         if (!resp.ok) throw new Error(j.error || txt || resp.statusText);
         r = j;
-      } else r = await postJSON('/api/upscale', { id: it.id, scale: b.dataset.k, method: b.dataset.m || '', engine: b.dataset.e || '', detail, sharp });
+      } else r = await postJSON('/api/upscale', { id: it.id, scale: b.dataset.k, method: b.dataset.m || '', engine: b.dataset.e || '', detail, sharp, dlss });
       qAdd(r.prompt_id, 'upscale', it.prompt || 'Увеличение');
       m.hidden = true; closeViewer(); toast(`Задание в очереди: готовое ${it.kind === 'image' ? 'изображение' : 'видео'} появится в Библиотеке`); goTo('queue');
     } catch (err) { toast(err.message); }

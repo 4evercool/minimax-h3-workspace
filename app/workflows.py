@@ -1920,6 +1920,56 @@ def relay_graph(m, video, seed, detail=1.0):
     return g, stages
 
 
+DLSS_MODES = ["1x (DLAA / native)", "1.5x (Quality)", "1.724x (Balanced)", "2x (Performance)", "3x (Ultra Performance)"]
+DLSS_PRESETS = ["Default", "J", "K", "L", "M"]
+DLSS_STYLES = ["natural", "cinematic", "default"]
+
+
+def dlss_inputs(p):
+    def f(k, d, lo, hi):
+        try:
+            return min(hi, max(lo, float(p.get(k, d))))
+        except (TypeError, ValueError):
+            return d
+    def i(k, d, lo, hi):
+        return int(f(k, d, lo, hi))
+    def b(k, d):
+        v = p.get(k, d)
+        return v if isinstance(v, bool) else str(v).lower() in ("1", "true", "on", "yes")
+    pick = lambda k, lst, d: p.get(k) if p.get(k) in lst else d
+    return {
+            "upscaling_mode": pick("upscaling_mode", DLSS_MODES, DLSS_MODES[1]),
+            "dlss_model_preset": pick("dlss_model_preset", DLSS_PRESETS, "M"), "style": pick("style", DLSS_STYLES, "natural"),
+            "intensity": f("intensity", 1.0, 0, 2), "tone": f("tone", 2.0, 0, 2), "structure": f("structure", 2.0, 0, 2),
+            "skin": f("skin", 2.0, -1, 2), "auto_mask": b("auto_mask", False),
+            "temporal_mode": pick("temporal_mode", ["auto", "none"], "auto"),
+            "scene_change_threshold": f("scene_change_threshold", 0.24, 0.01, 1), "warmup_frames": i("warmup_frames", 0, 0, 16),
+            "gpu_mode": b("gpu_mode", True), "chunk_frames": i("chunk_frames", 8, 0, 256), "change_frame": i("change_frame", 0, 0, 100000)}
+
+
+def dlss_image_graph(m, image, p, cls):
+    """The same DLSS 5 for one picture: `cls` is the class of the picture node ("DLSS 5 (OreX)") found in the user's ComfyUI."""
+    g = {"1": {"class_type": "LoadImage", "inputs": {"image": image}},
+         "2": {"class_type": cls, "inputs": {"image": ["1", 0], **dlss_inputs(p)}},
+         "3": {"class_type": "SaveImage", "inputs": {"filename_prefix": "H3Workspace/upscale", "images": ["2", 0]}}}
+    return g, {"1": "load", "2": "sample", "3": "save"}
+
+
+def dlss_graph(m, video, p):
+    """DLSS 5 Neural Rendering (unofficial node DLSS5NeuralRenderingVideo): the user's own settings, the sound of the source is put back."""
+    g = {
+        "1": {"class_type": "LoadVideo", "inputs": {"file": video}},
+        "2": {"class_type": "GetVideoComponents", "inputs": {"video": ["1", 0]}},
+        "3": {"class_type": "DLSS5NeuralRenderingVideo", "inputs": {"video": ["1", 0], **dlss_inputs(p)}},
+        "4": {"class_type": "GetVideoComponents", "inputs": {"video": ["3", 0]}},
+        "5": {"class_type": "CreateVideo", "inputs": {"images": ["4", 0], "audio": ["2", 1], "fps": ["2", 2]}},
+        "6": {"class_type": "SaveVideo", "inputs": {
+            "video": ["5", 0], "filename_prefix": "H3Workspace/upscale", "format": "auto", "format.codec": "auto"}},
+    }
+    stages = {"1": "load", "2": "load", "3": "sample", "4": "decode", "5": "save", "6": "save"}
+    return g, stages
+
+
 def upscale_graph(m, video, scale, seed, soften=0.0):
     g = {
         "1": {"class_type": "LoadVideo", "inputs": {"file": video}},

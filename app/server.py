@@ -2119,7 +2119,11 @@ class App:
         peek = await req.json()
         soft = peek.get("method") == "soft2k"  # "up to 2K", soft (pictures only)
         relay = peek.get("engine") == "relay"   # the fast RelayVSR x2 (video only) instead of SeedVR2
-        await self.need_models("relayvsr" if relay else "upscale")
+        dlss = peek.get("engine") == "dlss"
+        if dlss:
+            await self.need_dlss_node(self.library.get(peek.get("id", ""), {}).get("kind") == "image")
+        else:
+            await self.need_models("relayvsr" if relay else "upscale")
         if relay:
             await self.need_relay_node()
         if self.rh():
@@ -2150,6 +2154,69 @@ class App:
             raise web.HTTPBadRequest(text="Файл не найден")
         return await self._upscale_core(body, item, content, suffix, relay, soft)
 
+    async def h_dlss_check(self, req):
+        """Does the user's ComfyUI have the DLSS 5 node (video / picture)? The window shows instructions instead of the settings if not."""
+        out = {}
+        for key, pic in (("video", False), ("image", True)):
+            try:
+                out[key] = bool(await self.need_dlss_node(pic))
+            except web.HTTPBadRequest:
+                out[key] = False
+        out["managed"] = self.config.get("engine") == "managed"
+        nd = self.dlss_nodes_dir()
+        out["folder"] = bool(nd)
+        pack = nd / "ComfyUI-DLSS5-orex" if nd else None
+        out["pack_dir"] = bool(pack and pack.is_dir())
+        out["runtime_file"] = bool(pack and (pack / "runtime" / "nvngx_dlssnr.dll").is_file())
+        return web.json_response(out)
+
+    def dlss_nodes_dir(self):
+        """custom_nodes of the ComfyUI in use (the app's own, or the folder the user gave once), if known."""
+        if self.config.get("engine") == "managed":
+            root = self.comfy_root()
+            d = root / "ComfyUI" / "custom_nodes" if root else None
+        else:
+            raw = str(self.config.get("own_comfy_dir") or "").strip().strip('"')
+            base = Path(raw) if raw else None
+            d = next((c for c in (base / "custom_nodes", base / "ComfyUI" / "custom_nodes") if c.is_dir()), None) if base else None
+        return d if d and d.is_dir() else None
+
+    async def h_dlss_open(self, req):
+        """Opens the node's GitHub page or the custom_nodes folder: the user installs the DLSS 5 node and the NVIDIA file by hand."""
+        body = await req.json()
+        if body.get("what") == "github":
+            webbrowser.open("https://github.com/orex2121/ComfyUI-DLSS5-orex/releases")
+            return web.json_response({"ok": True})
+        if body.get("what") == "dll":   # the link the node's author gives in his runtime\README.txt; the user downloads it himself
+            webbrowser.open("https://github.com/orex2121/ComfyUI-DLSS5-orex/releases/download/nvngx-v1/nvngx_dlssnr.dll")
+            return web.json_response({"ok": True})
+        nd = self.dlss_nodes_dir()
+        if not nd:
+            raise web.HTTPBadRequest(text="Папка custom_nodes вашего ComfyUI не известна программе: откройте её сами (рядом с main.py ComfyUI).")
+        pack = nd / "ComfyUI-DLSS5-orex" / "runtime"
+        os.startfile(str(pack if body.get("what") == "runtime" and pack.is_dir() else nd))
+        return web.json_response({"ok": True})
+
+    async def need_dlss_node(self, pic=False):
+        """Checks the unofficial DLSS 5 node; for a picture returns the class of the node named «DLSS 5 (OreX)» (its class name is not fixed here)."""
+        try:
+            if not pic:
+                _, oi = await self.comfy_json("GET", "/object_info/DLSS5NeuralRenderingVideo", timeout=aiohttp.ClientTimeout(total=15))
+                found = "DLSS5NeuralRenderingVideo" if oi else ""
+            else:
+                _, oi = await self.comfy_json("GET", "/object_info/DLSS5NeuralRendering", timeout=aiohttp.ClientTimeout(total=15))
+                if oi:
+                    return "DLSS5NeuralRendering"
+                _, oi = await self.comfy_json("GET", "/object_info", timeout=aiohttp.ClientTimeout(total=60))
+                found = next((k for k, v in (oi or {}).items() if "DLSS" in k.upper() and "VIDEO" not in k.upper()
+                              and "image" in (v.get("input", {}).get("required", {}) or {})), "")
+        except Exception:
+            return "" if pic else None   # ComfyUI does not answer: the usual error will tell
+        if not found:
+            raise web.HTTPBadRequest(text="В вашем ComfyUI нет узла " + ("«DLSS 5 (OreX)» для картинок" if pic else "«DLSS 5 Video (OreX)»")
+                                          + ". Это сторонний экспериментальный узел, программа его сама не ставит. Поставьте его в ComfyUI и перезапустите ComfyUI.")
+        return found
+
     async def h_upscale_file(self, req):
         """The same enlarge for ANY file of the user (made elsewhere): the file comes with the request, not from the library."""
         form, content, name = {}, None, ""
@@ -2165,7 +2232,10 @@ class App:
         pic = suffix in (".png", ".jpg", ".jpeg", ".webp", ".bmp")
         relay = form.get("engine") == "relay"
         soft = form.get("method") == "soft2k"
-        await self.need_models("relayvsr" if relay else "upscale")
+        if form.get("engine") == "dlss":
+            await self.need_dlss_node(pic)
+        else:
+            await self.need_models("relayvsr" if relay else "upscale")
         if relay:
             await self.need_relay_node()
         if self.rh():
@@ -2178,6 +2248,7 @@ class App:
 
     async def _upscale_core(self, body, item, content, suffix, relay, soft):
         pic = item.get("kind") == "image"
+        dlss = body.get("engine") == "dlss"
         if relay:
             if pic:
                 raise web.HTTPBadRequest(text="Быстрое увеличение работает только для видео. Для изображения выберите SeedVR2.")
@@ -2223,6 +2294,22 @@ class App:
                 return min(1.0, max(0.0, float(body.get(key))))
             except (TypeError, ValueError):
                 return default
+        if dlss:
+            dp = body.get("dlss", {})
+            if isinstance(dp, str):
+                try:
+                    dp = json.loads(dp)
+                except ValueError:
+                    dp = {}
+            dp = dp if isinstance(dp, dict) else {}
+            if pic:
+                graph, stages = wf.dlss_image_graph(self.model_names, video, dp, await self.need_dlss_node(True))
+            else:
+                graph, stages = wf.dlss_graph(self.model_names, video, dp)
+            return await self.queue(graph, stages, {
+                "mode": "upscale", "sub": "DLSS 5 (" + str(dp.get("upscaling_mode", "")) + ")", "prompt": item.get("prompt", "") or "DLSS",
+                "aspect": item.get("aspect", ""), "q": item.get("q", ""), "len": item.get("len", 0.0), "res": "", "seed": seed,
+                "src": item.get("id", ""), "src_file": src_file})
         if relay:
             graph, stages = wf.relay_graph(self.model_names, video, seed, detail=num("detail", 0.7))
         else:
@@ -3991,6 +4078,8 @@ def build_app(comfy_override=None):
         web.post("/api/setup/reset", state.h_setup_reset),
         web.post("/api/generate/video", state.h_generate_video),
         web.post("/api/generate/krea", state.h_generate_krea),
+        web.get("/api/dlss_check", state.h_dlss_check),
+        web.post("/api/dlss_open", state.h_dlss_open),
         web.post("/api/upscale", state.h_upscale),
         web.post("/api/upscale_file", state.h_upscale_file),
         web.post("/api/grain", state.h_grain),
