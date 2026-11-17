@@ -2121,7 +2121,7 @@ class App:
         relay = peek.get("engine") == "relay"   # the fast RelayVSR x2 (video only) instead of SeedVR2
         dlss = peek.get("engine") == "dlss"
         if dlss:
-            await self.need_dlss_node(self.library.get(peek.get("id", ""), {}).get("kind") == "image")
+            await self.need_dlss_node((self.library.get(peek.get("id", "")) or {}).get("kind") == "image")
         else:
             await self.need_models("relayvsr" if relay else "upscale")
         if relay:
