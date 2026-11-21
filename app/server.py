@@ -402,13 +402,18 @@ class App:
             return r.status, data
 
     async def system_stats(self):
+        # a rented server behind a proxy (and a VPN) can answer slower than 8 seconds
+        remote = urllib.parse.urlparse(self.comfy).hostname not in ("127.0.0.1", "localhost", "::1", None)
+        t_stats, t_queue = (30, 20) if remote else (8, 8)
         try:
-            status, data = await self.comfy_json("GET", "/system_stats", timeout=aiohttp.ClientTimeout(total=8))
+            status, data = await self.comfy_json("GET", "/system_stats", timeout=aiohttp.ClientTimeout(total=t_stats))
             if status != 200 or not isinstance(data, dict) or "system" not in data:
                 raise ValueError("no stats")
+        except AuthNeeded:
+            raise
         except Exception:
             # some builds hide or slow down /system_stats; a queue answer still means ComfyUI is alive
-            status, _ = await self.comfy_json("GET", "/queue", timeout=aiohttp.ClientTimeout(total=8))
+            status, _ = await self.comfy_json("GET", "/queue", timeout=aiohttp.ClientTimeout(total=t_queue))
             if status != 200:
                 raise
             data = {"system": {}, "devices": []}
@@ -715,7 +720,10 @@ class App:
     async def h_status(self, _req):
         base = {"configured": bool(self.config.configured or self.comfy_override),
                 "engine": self.config.get("engine"), "full_mode": bool(self.config.get("full_mode")), "installing": bool(self.installer),
-                "saved_modes": self.config.get("modes") or []}
+                "saved_modes": self.config.get("modes") or [],
+                # the name of a rented server (never the login or the password): the UI shows plainly which engine is in use
+                "server_host": (urllib.parse.urlparse(self.comfy).hostname or "") if self.config.get("engine") == "external"
+                               and urllib.parse.urlparse(self.comfy).hostname not in ("127.0.0.1", "localhost", "::1", None) else ""}
         try:
             stats = await self.system_stats()
         except Exception:
@@ -1068,6 +1076,8 @@ class App:
             "profile": profile, "recommended": catalog.recommended_profile(hw), "modes": modes,
             "profiles": {k: {"title": v["title"], "about": v["about"], "sizes": sizes[k]} for k, v in catalog.PROFILES.items()},
             "install_dir": install_dir, "need_gb": need_gb,
+            "found_installs": await asyncio.to_thread(engine.find_installs),
+            "app_drive": (Path(sys.executable).drive if getattr(sys, "frozen", False) else ""),
             "plan": [{k: m[k] for k in ("role", "title", "file", "size", "variant")} for m in plan],
             "config": {k: self.config.get(k) for k in ("engine", "install_dir", "models_dir", "comfy_url", "setup_done")},
             "installing": bool(self.installer), "log": self.setup_log,
@@ -1107,6 +1117,8 @@ class App:
             except Exception as e:
                 if not isinstance(last_err, AuthNeeded):   # «needs a login» must not be overwritten by the 404 of the other path
                     last_err = e
+                if isinstance(e, (asyncio.TimeoutError, TimeoutError)):   # no answer at all: the other path will not help
+                    break
         if stats is None:
             self.config.data["comfy_url"] = old
             self.config.data["comfy_key"] = old_key
@@ -1115,7 +1127,13 @@ class App:
                        if not login else "Сервер не принял этот логин и пароль. Проверьте их и попробуйте ещё раз.")
                 return web.json_response({"error": msg, "need_login": True}, status=400)
             hint = " Если сервер арендован: проверьте, что под или сервер запущен, что адрес скопирован целиком (в RunPod порт 8188) и открывается в браузере, и ключ или логин с паролем, если сервис их выдал." if remote else ""
-            return web.json_response({"error": f"ComfyUI не отвечает по адресу {url} ({last_err if isinstance(last_err, ValueError) else type(last_err).__name__}). Откройте этот адрес "
+            blocked = remote and bool(re.search(r"HTTP 40[13]|HTTP 1020|Access denied|Attention Required|Cloudflare|blocked", str(last_err), re.I))
+            if remote:   # a VPN is the most frequent cause: the protection of the service (Cloudflare at RunPod) blocks some VPN addresses and countries
+                hint += ((" ВАЖНО: похоже, сервер вас не пустил из-за VPN. Отключите VPN или выберите в нём другую страну (США обычно работает; Германия и часть стран Европы блокируются) и нажмите «Подключить» ещё раз. Проверка: если адрес не открывается в обычном браузере при включённом VPN, дело в нём.")
+                         if blocked else " Если у вас включён VPN: отключите его или смените страну, и попробуйте ещё раз: сервисы аренды часто блокируют адреса VPN.")
+            why = ("сервер не ответил за 30 секунд: это сеть до сервера, а не логин" if remote and isinstance(last_err, (asyncio.TimeoutError, TimeoutError))
+                   else last_err if isinstance(last_err, ValueError) else type(last_err).__name__)
+            return web.json_response({"error": f"ComfyUI не отвечает по адресу {url} ({why}). Откройте этот адрес "
                                       "в браузере: если страница ComfyUI не открывается, проверьте адрес и порт в окне, "
                                       "где запущен ComfyUI." + hint}, status=400)
         url = used
@@ -3592,6 +3610,12 @@ class App:
         if have is None:
             return web.json_response({"ready": False, "state": "offline", "reason": "ComfyUI не запущен."})
         if not have:
+            nd = self.dlss_nodes_dir()
+            if nd and (nd / voicelab.VOICE_PACK["name"]).is_dir():   # the files are there, but the node did not load: say why (the engine log tells)
+                tail = self.process.log_tail(400) if self.process else ""
+                why = next((ln.strip() for ln in reversed(tail.splitlines()) if "[OmniVoice]" in ln and ("fail" in ln.lower() or "missing" in ln.lower() or "broken" in ln.lower())), "")
+                return web.json_response({"ready": False, "state": "nonode", "installed": True,
+                                          "reason": "Модуль OmniVoice установлен, но не запускается" + (f": {why}" if why else "") + ". Нажмите кнопку «Установить модуль голоса»: я сама доустановлю всё недостающее. Потом нажмите «Перезапустить программу», и всё заработает."})
             return web.json_response({"ready": False, "state": "nonode", "reason": "Для голосов нужен модуль OmniVoice. Его можно поставить кнопкой ниже."})
         local = [m for m in models if "auto download" not in m]
         return web.json_response({"ready": True, "model": voicelab.pick_model(models), "models": models, "downloaded": bool(local), "vc": bool(await self.voice_vc_info())})
@@ -3661,7 +3685,48 @@ class App:
             except asyncio.TimeoutError:
                 proc.kill()
                 pip_ok = False
+        if py and pack is voicelab.VOICE_PACK:
+            if not await self.voice_pip_fix(py, root):
+                pip_ok = False
         return web.json_response({"ok": True, "pip": pip_ok, "python_found": bool(py)})
+
+    async def voice_pip_fix(self, py, root):
+        """The node installs «omnivoice» with --no-deps, so some of its libraries are missing: Python 3.13 has no built-in «audioop» (pydub fails with
+        «No module named pyaudioop»: audioop-lts brings it back), and transformers needs «accelerate» to load the model (device_map).
+        Then anything else the import still lacks is installed one by one («No module named X»). True when everything is in place."""
+        extra = {"env": engine.local_env(root)} if root else {}
+        ok = True
+
+        async def run_py(*args, timeout=600):
+            p = await asyncio.create_subprocess_exec(str(py), "-s", *args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+                                                     creationflags=engine.CREATE_NO_WINDOW, **extra)
+            _, err = await asyncio.wait_for(p.communicate(), timeout)
+            return p.returncode, err.decode("utf-8", "ignore")
+        try:
+            for pkg, mod in (("audioop-lts", "audioop"), ("accelerate", "accelerate")):
+                if (await run_py("-c", f"import {mod}", timeout=120))[0] != 0:
+                    if (await run_py("-m", "pip", "install", pkg))[0] != 0:
+                        ok = False
+            tried = set()
+            for _ in range(6):
+                rc, err = await run_py("-c", "import omnivoice", timeout=300)
+                m = re.search(r"No module named '([A-Za-z0-9_\-]+)", err)
+                if rc == 0 or not m or m.group(1) in tried:
+                    if rc != 0:
+                        ok = False
+                    break
+                if m.group(1) in ("omnivoice", "torch", "torchaudio", "torchvision"):   # never pulled in here: omnivoice pins its own torch and would replace the GPU build
+                    ok = False
+                    break
+                name = {"pyaudioop": "audioop-lts", "yaml": "pyyaml", "cv2": "opencv-python-headless"}.get(m.group(1), m.group(1))
+                tried.add(m.group(1))
+                if (await run_py("-m", "pip", "install", name))[0] != 0:
+                    ok = False
+                    break
+        except (OSError, asyncio.TimeoutError) as e:
+            print(f"Voice Lab packages: {type(e).__name__}: {e}", file=sys.stderr)
+            ok = False
+        return ok
 
     # ---------- Reference Lab (see reflab.py) ----------
 
@@ -3865,6 +3930,12 @@ class App:
                 m0 = (msgs[0].strip() if msgs else "ошибка ComfyUI")
                 if "nterrupt" in m0:
                     return web.json_response({"error": "Остановлено"}, status=499)
+                if re.search(r"requires .accelerate|No module named|pyaudioop", m0):   # a library of the voice module is missing: put it in, the restart makes ComfyUI see it
+                    py = await self.running_comfy_python()
+                    managed = self.config.get("engine") == "managed" and self.comfy_root()
+                    py = py or (self.comfy_root() / "python_embeded" / "python.exe" if managed else None)
+                    if py and Path(py).is_file() and await self.voice_pip_fix(py, self.comfy_root() if managed else None):
+                        return web.json_response({"error": "Для голоса не хватало служебной библиотеки, я её доустановила. Теперь нажмите «Перезапустить программу» и повторите озвучку.", "fixed": True}, status=500)
                 return web.json_response({"error": "Не удалось сделать голос: " + m0[:600]}, status=500)
             audio = next((f for out in entry.get("outputs", {}).values() for f in out.get("audio", [])), None)
             if audio:

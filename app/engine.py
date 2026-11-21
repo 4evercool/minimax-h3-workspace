@@ -105,8 +105,67 @@ def disk_free_gb(path):
         return None
 
 
+_found_cache = [0.0, []]
+
+
+def find_installs():
+    """Folders on any drive that already hold the program's ComfyUI (ComfyUI_windows_portable) with models or settings:
+    the drive root and up to two levels down. The user is warned before a second copy is made (it would repeat ~50-90 GB)."""
+    if time.time() - _found_cache[0] < 20:
+        return list(_found_cache[1])
+    skip = {"windows", "program files", "program files (x86)", "programdata", "$recycle.bin", "system volume information", "users", "recovery", "msocache"}
+    out = []
+
+    def has(base):
+        try:
+            c = base / catalog.COMFY_DIRNAME
+            return c.is_dir() and ((c / "ComfyUI" / "models").is_dir() or (base / "data" / "config.json").is_file())
+        except OSError:
+            return False
+
+    for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+        root = Path(f"{letter}:\\")
+        try:
+            if not root.exists():
+                continue
+            kids = [p for p in root.iterdir() if p.is_dir() and p.name.lower() not in skip]
+        except OSError:
+            continue
+        if has(root):
+            out.append(str(root))
+        for k in kids:
+            if has(k):
+                out.append(str(k))
+                continue
+            try:
+                for g in list(k.iterdir())[:300]:
+                    if g.is_dir() and has(g):
+                        out.append(str(g))
+            except OSError:
+                continue
+    _found_cache[0], _found_cache[1] = time.time(), out
+    return list(out)
+
+
 def default_install_dir():
-    # biggest fixed drive other than C: if there is one, else the user's local app data
+    # 1) a folder of an earlier install on any drive is used again (no second copy of ComfyUI and the models)
+    for letter in "DEFGHIJKLMNOPQRSTUVWXYZC":
+        old = Path(f"{letter}:\\") / "MinimaxH3Workspace"
+        try:
+            if (old / "ComfyUI_windows_portable").is_dir() or (old / "data" / "config.json").is_file():
+                return str(old)
+        except OSError:
+            continue
+    # 2) the drive the program itself is installed on, when it has room: the models land next to the program, not on another drive
+    if getattr(sys, "frozen", False):
+        drv = Path(sys.executable).drive
+        if drv and drv.upper() != "C:":
+            try:
+                if shutil.disk_usage(drv + "\\").free > 120e9:
+                    return str(Path(drv + "\\") / "MinimaxH3Workspace")
+            except OSError:
+                pass
+    # 3) biggest fixed drive other than C: if there is one, else the user's local app data
     best, best_free = None, 0
     for letter in "DEFGHIJKLMNOPQRSTUVWXYZ":
         root = f"{letter}:\\"

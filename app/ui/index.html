@@ -480,10 +480,10 @@ textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft
 #doneBanner small{display:block;color:var(--muted);font-size:12.5px;margin-top:2px}
 .sc.sc-flash{animation:scflash 1.8s ease-out}
 @keyframes scflash{0%{box-shadow:0 0 0 3px var(--accent),0 0 24px var(--accent-soft)}100%{box-shadow:0 0 0 0 transparent}}
-.clip-len{-webkit-appearance:none;appearance:none;background:var(--bg-2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' fill='none' stroke='%239aa4b2' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M1 1.5l5 5 5-5'/%3E%3C/svg%3E") no-repeat right 12px center;color:inherit;border:1px solid var(--line);border-radius:12px;padding:9px 34px 9px 14px;font:inherit;outline:none;cursor:pointer;margin:0 4px}
+.clip-len,.clip-sel{-webkit-appearance:none;appearance:none;background:var(--bg-2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' fill='none' stroke='%239aa4b2' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M1 1.5l5 5 5-5'/%3E%3C/svg%3E") no-repeat right 12px center;color:inherit;border:1px solid var(--line);border-radius:12px;padding:9px 34px 9px 14px;font:inherit;outline:none;cursor:pointer;margin:0 4px}
 .st-total{background:var(--bg-2);color:inherit;border:1px solid var(--line);border-radius:12px;padding:9px 14px;font:inherit;outline:none;text-align:center;width:76px!important;margin:0 4px}
 .st-total:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
-.clip-len:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.clip-len:focus,.clip-sel:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
 /* the clip page: every field looks like the prompt box (no grey system boxes) */
 #view-clip input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]):not([type=color]):not([type=button]),#view-clip select{background-color:var(--bg-2);color:inherit;border:1px solid var(--line);border-radius:12px;padding:8px 12px;font:inherit;font-size:13.5px;outline:none;box-sizing:border-box}
 #view-rhclip input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]):not([type=color]):not([type=button]),#view-rhclip select{background-color:var(--bg-2);color:inherit;border:1px solid var(--line);border-radius:12px;padding:8px 12px;font:inherit;font-size:13.5px;outline:none;box-sizing:border-box}
@@ -1240,6 +1240,18 @@ img.pr-media{object-position:center 38%}
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8z"/><path d="M19 15l.8 1.9 1.9.8-1.9.8L19 20.4l-.8-1.9-1.9-.8 1.9-.8z" opacity=".6"/></svg>
       LLM
     </button>
+    <button class="nav" data-view="library">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v5M16 4v5"/><path d="m10 13 4 2.5-4 2.5z" fill="currentColor"/></svg>
+      Библиотека <span class="badge" id="libBadge">0</span>
+    </button>
+    <button class="nav" data-view="queue">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h12M4 12h12M4 18h8"/><circle cx="19" cy="16" r="3"/><path d="M19 14.7V16l1 .6"/></svg>
+      Очередь <span class="badge" id="qBadge" hidden></span>
+    </button>
+    <button class="nav" data-view="custom" id="navCustom" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><path d="M10 6.5h4a3 3 0 0 1 3 3V14"/></svg>
+      Свои workflow
+    </button>
     <button class="nav sub active" data-view="video">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="13" height="14" rx="2"/><path d="m16 10 5-3v10l-5-3"/></svg>
       Image-to-Video
@@ -1282,19 +1294,6 @@ img.pr-media{object-position:center 38%}
       Инпейнт
     </button>
 
-    <button class="nav" data-view="custom" id="navCustom" hidden>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><path d="M10 6.5h4a3 3 0 0 1 3 3V14"/></svg>
-      Свои workflow
-    </button>
-
-    <button class="nav" data-view="library">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v5M16 4v5"/><path d="m10 13 4 2.5-4 2.5z" fill="currentColor"/></svg>
-      Библиотека <span class="badge" id="libBadge">0</span>
-    </button>
-    <button class="nav" data-view="queue">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h12M4 12h12M4 18h8"/><circle cx="19" cy="16" r="3"/><path d="M19 14.7V16l1 .6"/></svg>
-      Очередь <span class="badge" id="qBadge" hidden></span>
-    </button>
     <button class="nav mv" data-view="refmode">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 5.5a3 3 0 0 1 0 5.5M18 14.5c1.9.7 3 2.4 3 5.5"/></svg>
       Reference Mode
@@ -1826,6 +1825,7 @@ img.pr-media{object-position:center 38%}
             <label>Куда установить</label>
             <div class="path on"><input id="instDir" spellcheck="false"><button class="btn" data-pick="instDir">Обзор…</button></div>
             <small class="hint" id="diskHint"></small>
+            <div id="instWarn"></div>
           </div>
           <div class="fld" data-for="external">
             <div class="ext-kind" id="extKind">
@@ -2113,12 +2113,13 @@ function connectEvents() {
   };
   ws.onclose = () => { setEngine(false); setTimeout(connectEvents, 2000); };
 }
-let ENGINE_ON = true;
+let ENGINE_ON = true, ENGINE_SERVER = '';
 function setEngine(on) {
   ENGINE_ON = on;
   const cloudOn = typeof CLOUD !== 'undefined' && CLOUD.enabled;
   $('#engDot').classList.toggle('off', !on && !cloudOn);
-  $('#engTxt').textContent = cloudOn ? 'облако' : on ? 'подключён' : 'не запущен';
+  $('#engTxt').textContent = cloudOn ? 'облако' : on ? (ENGINE_SERVER ? 'сервер подключён' : 'подключён') : (ENGINE_SERVER ? 'сервер не отвечает' : 'не запущен');
+  $('#engTxt').title = ENGINE_SERVER ? 'Арендованный сервер: ' + ENGINE_SERVER : '';
 }
 /* the main menu on the left can be hidden (to give the page the whole window) and shown again */
 (function () {
@@ -2261,6 +2262,7 @@ async function loadStatus() {
   try {
     const s = await (await fetch('/api/status')).json();
     $('#setCustomBox').hidden = s.engine !== 'external';
+    $('#navCustom').hidden = s.engine !== 'external';   // «Свои workflow» sits in the side panel for those who work in their own ComfyUI (it was reached only through Settings)
     window.MGD = s.engine === 'managed';
     const full = window.MGD && !!s.full_mode;   // beginner who opened «Для опытных»: same ComfyUI, all settings
     document.body.classList.toggle('beginner', window.MGD && !full);
@@ -3543,6 +3545,7 @@ async function openSetup() {
   const free = hw.disk_free_gb;
   $('#diskHint').textContent = `Понадобится до ~${setupInfo.need_gb} ГБ (если моделей ещё нет)` + (free != null ? `, свободно ${free} ГБ` : '')
     + (free != null && free < setupInfo.need_gb ? ' — места может не хватить, выберите другой диск' : '');
+  $('#instWarn').innerHTML = installWarnHtml(setupInfo, $('#instDir').value);
   $('#planList').innerHTML = setupInfo.plan.map(m =>
     `<div class="m"><b>${esc(m.file)}<small>${esc(m.title)}</small></b><span></span><span class="st">${GB(m.size)}</span></div>`).join('');
   const key = 'selected';
@@ -3704,7 +3707,8 @@ $('#wzStart').onclick = async () => {
         confirmBox('Сервер подключён ✓', `Приложение подключилось к серверу (ComfyUI ${r.version || ''}), связь работает.` + (lack ? ` Но на самом сервере пока нет — ${lack}. Приложение не устанавливает их на сервер: поставьте на сервере сами (ComfyUI Manager, или выберите шаблон, где всё уже есть). Список того, чего не хватает, виден в «Настройки» → «Модели и движок».` : ' На сервере есть всё нужное.'), 'Понятно', async () => {});
       } else if (r.nodes_missing?.length) { goTo('models'); toast(`В вашем ComfyUI нет нод: ${r.nodes_missing.join(', ')}. Подробности в разделе «Настройки».`); }
     } else {
-
+      const dup = dupRisk(setupInfo, $('#instDir').value.trim());
+      if (dup.length && !setupDupOk) { confirmBox('На компьютере уже есть установка', `Найдено: ${dup.join(', ')}. Если продолжить, ComfyUI и модели скачаются ещё раз (около ${setupInfo.need_gb} ГБ) и будут занимать место дважды. Лучше нажать «Отмена» и выбрать кнопку «Использовать …» в красном окне.`, 'Всё равно установить вторую копию', () => { setupDupOk = true; $('#wzStart').click(); }); $('#wzStart').disabled = false; return; }
       await postJSON('/api/setup/install', { install_dir: $('#instDir').value.trim(), profile: setupProfile, modes: setupModes });
       showSetupPane('progress'); setStep(2); resetProgress();
     }
@@ -3811,7 +3815,10 @@ function renderModels(s) {
   });
   $('#mdEngine').innerHTML = s.engine === 'managed'
     ? `<span>Режим</span><b>встроенный ComfyUI ${s.comfy_version || ''}</b><span>Папка</span><b>${esc(setupInfo?.config?.install_dir || '')}</b><span>Видео</span><b>${esc(s.output_dir || '')}</b>`
-    : `<span>Режим</span><b>ваш ComfyUI ${s.comfy_version || ''}</b><span>Видео</span><b>${esc(s.output_dir || 'папка output вашего ComfyUI')}</b>`;
+    : s.server_host
+    ? `<span>Режим</span><b style="color:var(--accent)">АРЕНДОВАННЫЙ СЕРВЕР (не ваш компьютер)</b><span>Адрес</span><b>${esc(s.server_host)}</b><span>ComfyUI</span><b>${s.comfy_version || ''}</b>`
+    : `<span>Режим</span><b>ваш ComfyUI на этом компьютере ${s.comfy_version || ''}</b><span>Видео</span><b>${esc(s.output_dir || 'папка output вашего ComfyUI')}</b>`;
+  ENGINE_SERVER = s.server_host || ''; setEngine(ENGINE_ON);
   const cv = String(s.comfy_version || '').match(/(\d+)\.(\d+)\.(\d+)/);
   const oldC = cv ? (+cv[1] === 0 && +cv[2] < 45) : false;
   $('#mdCmUpd').hidden = s.engine !== 'managed';
@@ -4030,6 +4037,35 @@ function firstRun(on) { document.body.classList.toggle('first-run', !!on); }
 /* The first start: a full-screen choice of two big buttons. «I am a beginner» installs everything by itself (profile by the video card, a
    starter set of sections that fits the disk); «I have my own ComfyUI» goes to the connection form. */
 const WL_SETS = [['video', 'long', 'krea'], ['video', 'long'], ['video']];   // the biggest set that fits the free disk is taken (about 93 / 74 / 48 GB); the rest is added later in «Настройки»
+/* a second copy of ComfyUI and the models (50-90 GB) is made when the install folder differs from the one already on the computer: warn loudly and offer the found folder */
+let setupDupOk = false;   // the user agreed to a second copy
+const normP = p => String(p || '').replace(/[\\/]+$/, '').toLowerCase();
+function dupRisk(info, cur) {   // found installs that are not the chosen folder, only when the chosen folder holds no install yet
+  const found = (info && info.found_installs) || [], c = normP(cur || (info && info.install_dir));
+  return found.some(p => normP(p) === c) ? [] : found;
+}
+function installWarnHtml(info, cur) {
+  if (!info) return '';
+  const found = info.found_installs || [], c = normP(cur || info.install_dir), same = found.some(p => normP(p) === c), others = found.filter(p => normP(p) !== c);
+  const btn = p => `<button class="btn mini" type="button" data-useinst="${esc(p)}">Использовать ${esc(p)}</button>`;
+  if (others.length && !same) return `<div class="inst-warn" style="margin:10px 0;padding:12px 14px;border:2px solid #ff4d52;border-radius:12px;background:rgba(255,77,82,.12);line-height:1.5">
+    <b style="color:#ff6b70">ВНИМАНИЕ: на этом компьютере уже есть установка программы.</b><br>
+    Найдено: ${others.map(p => '<b>' + esc(p) + '</b>').join(', ')}.<br>
+    Если продолжить с папкой <b>${esc(cur || info.install_dir || '')}</b>, ComfyUI и модели скачаются ВТОРОЙ раз: это ещё около ${info.need_gb} ГБ, и они будут занимать место дважды.<br>
+    <b>Что сделать:</b> нажмите кнопку ниже, и программа продолжит с уже установленной папкой, ничего заново не скачивая и не копируя.<br>
+    <span style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">${others.map(btn).join('')}</span></div>`;
+  if (same && others.length) return `<div class="inst-warn" style="margin:10px 0;padding:12px 14px;border:2px solid #ffb020;border-radius:12px;background:rgba(255,176,32,.12);line-height:1.5">
+    <b>Найдены лишние копии установки:</b> ${others.map(p => '<b>' + esc(p) + '</b>').join(', ')}. Программа их не использует, а места они занимают много. Если вы уверены, что в них нет ничего нужного (свои модели, свои LoRA), удалите эти папки в Проводнике вручную. Программа сама ничего не удаляет.</div>`;
+  if (same) return `<div class="inst-warn" style="margin:8px 0;padding:8px 12px;border:1px solid #2fbf71;border-radius:12px;background:rgba(47,191,113,.10)">Здесь уже есть установка: она будет использована, заново ничего не скачивается.</div>`;
+  const drv = (info.app_drive || '').toUpperCase(), cd = String(cur || info.install_dir || '').slice(0, 2).toUpperCase();
+  if (drv && cd && drv !== cd) return `<div class="inst-warn" style="margin:8px 0;padding:8px 12px;border:1px solid #ffb020;border-radius:12px;background:rgba(255,176,32,.10)">Программа стоит на диске <b>${esc(drv)}</b>, а ComfyUI и модели будут скачаны на <b>${esc(cd)}</b>. Если вам нужен один диск, нажмите «Изменить папку» и выберите ${esc(drv)}.</div>`;
+  return '';
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-useinst]'); if (!b) return;
+  $('#instDir').value = b.dataset.useinst;
+  const w = $('#welcome'); if (w && !w.hidden) showWelcome(); else if ($('#instDir').onchange) $('#instDir').onchange();
+});
 async function showWelcome() {
   const w = $('#welcome'); if (!w) return;
   w.hidden = false;
@@ -4053,6 +4089,7 @@ async function showWelcome() {
       <ul><li>Поставит ComfyUI и всё нужное</li><li>Подберёт модели под вашу видеокарту (${esc(title)})</li><li>Поставит разделы: ${set.map(m => names[m]).join('; ')}</li><li>Скачается около <b>${info.need_gb} ГБ</b>, это от получаса до нескольких часов, в зависимости от интернета</li><li>Остальное (экшн, правка изображений, MiniMax H3 Image и другое) можно добавить потом в «Настройках» одной кнопкой</li></ul>
       <div class="wl-dir"><span>Папка установки: <b>${esc(curDir || base.install_dir || '')}</b>${free != null ? ` (свободно ${free} ГБ)` : ''}</span><button class="btn mini wl-dirbtn" type="button">Изменить папку</button></div>
       <small class="wl-dirhint">Лучше выбрать диск SSD: на обычном жёстком диске модели грузятся очень медленно.</small>
+      ${installWarnHtml(base, curDir)}
       ${tight ? `<p style="color:#ff6b70"><b>На диске свободно ${free} ГБ: может не хватить места.</b> Освободите место или нажмите «Изменить папку» и выберите другой диск.</p>` : ''}
       <button class="wl-go wl-new" type="button" ${noGpu ? 'disabled' : ''}>Установить всё автоматически</button></div>
     <div class="wl-card"><h2>У меня уже есть ComfyUI</h2><p><b>Для тех, кто работает в ComfyUI и хочет все настройки.</b> Подключимся к вашему ComfyUI (на этом компьютере или арендованному), ничего не скачивая и не ставя.</p>
@@ -4061,6 +4098,7 @@ async function showWelcome() {
     <div class="wl-link"><a class="wl-cloud">Слабый компьютер? Работать в облаке (RunningHub)</a></div>`);
   const start = async opt => { setupSeeded = true; setupOpt = opt; w.hidden = true; goTo('models'); await openSetup(); };
   $('.wl-new', w).onclick = async () => {
+    if (!setupDupOk && dupRisk(base, curDir || base.install_dir).length) { confirmBox('На компьютере уже есть установка', `Найдено: ${dupRisk(base, curDir || base.install_dir).join(', ')}. Если продолжить, ComfyUI и модели скачаются ещё раз (около ${info.need_gb} ГБ) и будут занимать место дважды. Лучше нажать «Отмена» и выбрать кнопку «Использовать …» в красном окне.`, 'Всё равно установить вторую копию', () => { setupDupOk = true; $('.wl-new', w).click(); }); $('#cfOk').textContent = 'Всё равно установить вторую копию'; return; }
     const b = $('.wl-new', w); b.disabled = true; b.textContent = 'Запускаю…';
     setupModes = set.slice(); setupProfile = rec;
     try { await start('new'); $('#wzStart').click(); } catch (e) { w.hidden = false; b.disabled = false; b.textContent = 'Установить всё автоматически'; toast(e.message); }
@@ -5880,6 +5918,34 @@ function makeRefMode(cfg) {
     }));
 
     /* «Создание клипа»: the music is the base. The Agent listens (roughly: energy and activity of every piece), cuts the track into scenes and writes a prompt for each */
+    /* limits of the scenes (minimum, maximum, number of scenes): the same three fields on the clip page and in the Video studio, local and RunningHub */
+    const scLimitsHtml = (minCls, maxCls, cntCls, dmin, dmax) => {
+      const nums = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], opt = (a, d) => a.map(n => `<option${n === d ? ' selected' : ''}>${n}</option>`).join('');
+      return `<label>Сцена от <select class="clip-sel ${minCls}" title="Короче этого сцены не будут">${opt(nums, dmin)}</select></label><label>до <select class="${maxCls}" title="Длиннее этого сцены не будут">${opt(nums, dmax)}</select> секунд</label>`
+        + `<label>Сцен <select class="clip-sel ${cntCls}" title="«авто»: Агент решает сам. Число: не больше стольких сцен на весь кусок (общая длина сохраняется, сцены станут длиннее)"><option value="0">авто</option>${[2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20, 30, 40].map(n => `<option value="${n}">не больше ${n}</option>`).join('')}</select></label>`;
+    };
+    /* brings the list of scenes written by the Agent to the limits: every scene min..max, not more than cnt scenes, and (when the length W of the piece is known) the sum equals W */
+    const fitScenes = (clean, W, mn, mx, cnt) => {
+      mn = Math.min(mn, mx);
+      if (cnt && W) mx = Math.min(15, Math.max(mx, Math.ceil(W / cnt)));
+      clean.forEach(x => { x.sec = Math.max(mn, Math.min(mx, Math.round(x.sec) || mn)); });
+      const sum = () => clean.reduce((q, x) => q + x.sec, 0);
+      while (cnt && clean.length > cnt && clean.length > 1) {   // too many scenes: the shortest one is removed, its seconds go to the neighbour
+        let k = 0; clean.forEach((x, i) => { if (x.sec < clean[k].sec) k = i; });
+        const d = clean.splice(k, 1)[0], nb = clean[Math.max(0, k - 1)]; nb.sec = Math.min(mx, nb.sec + d.sec);
+      }
+      if (!W) return clean;
+      W = Math.round(W);
+      while (clean.length > 1 && sum() - clean[clean.length - 1].sec >= W) clean.pop();   // scenes that begin after the end of the piece
+      let diff = W - sum();
+      for (let g = 0; g < 400 && diff !== 0; g++) {   // one second at a time: shortest scenes grow first, longest shrink first
+        const order = clean.map((x, i) => i).sort((a, b) => diff > 0 ? clean[a].sec - clean[b].sec : clean[b].sec - clean[a].sec); let moved = false;
+        for (const i of order) { if (diff > 0 && clean[i].sec < mx) { clean[i].sec++; diff--; moved = true; } else if (diff < 0 && clean[i].sec > mn) { clean[i].sec--; diff++; moved = true; } if (!diff) break; }
+        if (!moved) break;
+      }
+      while (clean.length > 1 && sum() - clean[clean.length - 1].sec >= W) clean.pop();
+      return clean;
+    };
     root._buildClip = musCard => {
       {   // the music slot sits with the pictures: «Референс изображений», then «Референс музыки»; the card of the music keeps only the editor
         const imgsCard = $('.rm-imgs', root).closest('.card'), media = $('.rm-media', root), imgsEl2 = $('.rm-imgs', root);
@@ -5899,8 +5965,8 @@ function makeRefMode(cfg) {
         <textarea class="clip-all" style="min-height:70px" placeholder="Сюжет, настроение, герои, стиль всего клипа. Например: девушка в красном платье путешествует по разным местам, мягкий закатный свет."></textarea>
         <div class="sub-l" style="margin-top:12px"><span>Выделите кусок трека на волне выше и нажмите кнопку <small style="font-weight:400">(можно всю песню, если до 2 минут)</small></span></div>
         <div class="clip-range hint" style="margin:2px 0 6px"></div>
-        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:6px 0 4px"><label>Сцена не длиннее <select class="clip-len"><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option><option>9</option><option selected>10</option><option>11</option><option>12</option><option>13</option><option>14</option><option>15</option></select> секунд</label>
-        <button class="btn pri clip-agent" type="button" title="Агент послушает выделенный кусок, сам решит, где какая сцена (от 3 секунд до выбранного максимума), и напишет промпт для каждой">Агент: разделить на сцены</button>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:6px 0 4px">${scLimitsHtml('clip-min', 'clip-len', 'clip-cnt', 4, 10)}
+        <button class="btn pri clip-agent" type="button" title="Агент послушает выделенный кусок, сам решит, где какая сцена (в пределах выбранных длин и числа сцен), и напишет промпт для каждой">Агент: разделить на сцены</button>
         <button class="btn clip-fill" type="button" title="Агент напишет промпты только для сцен, в которых текста ещё нет: по общей идее клипа, музыке сцены, её пожеланию и её картинке. Сцены с текстом не трогаются">Написать промпты пустых сцен</button><button class="btn clip-sundo" type="button" title="Вернуть сцены, какими они были до последнего запуска Агента или очистки">↶ Назад</button><button class="btn clip-sredo" type="button" title="Вернуть отменённые сцены">↷ Вперёд</button><button class="btn clip-next" type="button" title="Выделение переедет на следующий кусок такой же длины. Сцены текущего куска останутся, их клипы уже в Библиотеке">Следующий кусок трека →</button></div>
         <div class="hint clip-mode" style="margin:2px 0 6px;line-height:1.5"></div>
         <label class="hint" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0" title="Каждая сцена продолжает конец предыдущей. Когда вы переделываете сцену, её конец меняется, и сцена после неё уже не стыкуется. «Эту и следующую»: переделанная сцена начинается как раньше (с конца предыдущей), а следующая сцена заново продолжает её новый конец; остальные не трогаются (стык следующей с ещё одной после неё может быть резким)."> Когда переделываю сцену, делать заново: <select class="clip-keep"><option value="one">только эту (остальные не трогать)</option><option value="next" selected>эту и следующую (для плавного стыка)</option><option value="all">эту и все следующие</option></select></label>
@@ -6094,7 +6160,7 @@ function makeRefMode(cfg) {
         root._undo = [];
         $$('.sc', root).forEach(c => c.remove()); root._run = Math.random().toString(36).slice(2, 12); root._sel = 0;
         $$('.ref .x', imgsEl).forEach(x => x.click()); $('.rm-auds .slot .x', root)?.click(); root._setSrc?.(null);
-        $('.clip-all', card).value = ''; desc.value = ''; $('.clip-len', card).value = '10'; $('.clip-rip', card).checked = true; root._ripple = true;
+        $('.clip-all', card).value = ''; desc.value = ''; $('.clip-len', card).value = '10'; $('.clip-min', card).value = '4'; $('.clip-cnt', card).value = '0'; $('.clip-rip', card).checked = true; root._ripple = true;
         try { localStorage.removeItem('h3-clip-all'); localStorage.removeItem('h3-clip-desc'); } catch {}
         $('.lm-start', root).value = '0'; $('.lm-vocals', root).checked = false;
         SU.length = 0; SR.length = 0; paintS();
@@ -6155,7 +6221,7 @@ function makeRefMode(cfg) {
         const b = $('.clip-save', card); if (b.disabled) return; b.disabled = true; st.textContent = 'Собираю проект…';
         try {
           const proj = root._snap && root._snap(); if (!proj) throw new Error('В проекте пока нечего сохранять');
-          const slotA = $('.rm-auds .slot', root), entries = [], meta = { app: 'h3clip', v: 1, saved: new Date().toISOString(), proj, clip: { all: $('.clip-all', card).value, desc: desc.value, len: $('.clip-len', card).value, sel: root._clipSel ? root._clipSel() : null }, refs: [], music: null, simg: {}, clips: {} };
+          const slotA = $('.rm-auds .slot', root), entries = [], meta = { app: 'h3clip', v: 1, saved: new Date().toISOString(), proj, clip: { all: $('.clip-all', card).value, desc: desc.value, len: $('.clip-len', card).value, min: $('.clip-min', card).value, cnt: $('.clip-cnt', card).value, sel: root._clipSel ? root._clipSel() : null }, refs: [], music: null, simg: {}, clips: {} };
           $$('.ref', imgsEl).forEach((r, i) => { if (r._file) { const nm = `refs/ref${i}_${safeName(r._file.name)}`; meta.refs.push({ i, name: nm }); entries.push({ name: nm, blob: r._file }); } });
           if (slotA && slotA._file) { meta.music = 'music/' + safeName(slotA._file.name); entries.push({ name: meta.music, blob: slotA._file }); }
           const cards2 = $$('.sc', root);
@@ -6189,7 +6255,7 @@ function makeRefMode(cfg) {
             for (const r of meta.refs || []) if (z[r.name]) await putInto($$('.ref input', imgsEl)[r.i], mk(r.name, 'image/png'));
             const slotA = $('.rm-auds .slot', root); $('.x', slotA)?.click(); if (meta.music && z[meta.music]) await putInto($('input', slotA), mk(meta.music, 'audio/wav'));
             $('.lm-start', root).value = p.start || '0'; $('.lm-vocals', root).checked = !!p.vocals;
-            $('.clip-all', card).value = (meta.clip || {}).all || ''; desc.value = (meta.clip || {}).desc || ''; if ((meta.clip || {}).len) $('.clip-len', card).value = meta.clip.len;
+            $('.clip-all', card).value = (meta.clip || {}).all || ''; desc.value = (meta.clip || {}).desc || ''; if ((meta.clip || {}).len) $('.clip-len', card).value = meta.clip.len; if ((meta.clip || {}).min) $('.clip-min', card).value = meta.clip.min; if ((meta.clip || {}).cnt) $('.clip-cnt', card).value = meta.clip.cnt;
             try { localStorage.setItem('h3-clip-all', $('.clip-all', card).value); localStorage.setItem('h3-clip-desc', desc.value); } catch {}
             root._setScenes((p.scenes || []).map(x => ({ prompt: x.prompt, sec: x.sec, fresh: !!x.fresh, tags: x.tags || [] })));
             const cs = $$('.sc', root);
@@ -6259,7 +6325,7 @@ function makeRefMode(cfg) {
         if (!text) { st.textContent = 'Опишите клип или этот кусок.'; desc.focus(); return; }
         const sel = root._clipSel && root._clipSel(), start = sel ? sel.a : Math.max(0, parseFloat($('.lm-start', root)?.value) || 0), end = sel ? sel.b : root._adur;
         if (end - start < 3) { st.textContent = 'Выделите кусок трека не короче 3 секунд.'; return; }
-        const step = +$('.clip-len', card).value || 10, BATCH = 45;   // a long piece is written in parts of ~45 s, one after another: the Agent keeps the story going
+        const step = +$('.clip-len', card).value || 10, mnLen = Math.min(+$('.clip-min', card).value || 3, step), cntAll = +$('.clip-cnt', card).value || 0, BATCH = 45;   // a long piece is written in parts of ~45 s, one after another: the Agent keeps the story going
         if (sel && Math.abs((parseFloat($('.lm-start', root).value) || 0) - start) > 0.06) { $('.lm-start', root).value = String(Math.round(start * 10) / 10); $('.lm-start', root).dispatchEvent(new Event('input')); }
         const cards = root._rmCards ? root._rmCards() : [], imgs = await Promise.all($$('label.ref.filled', root).map(r => r._file).filter(Boolean).map(f => fileToDataURL(f)));
         const splitOnly = !imgs.length && !cards.length;   // no common heroes / places: the Agent only cuts the track into scenes, the prompts are asked scene by scene
@@ -6272,7 +6338,7 @@ function makeRefMode(cfg) {
         setP(0);
         for (let guard = 0; guard < 60 && end - t >= 3; guard++) {
           let W = Math.min(end - t, BATCH); if (end - t - W < 6) W = end - t;
-          k++; const tag = parts > 1 ? `Часть ${k} из ~${parts}: ` : '';
+          k++; const tag = parts > 1 ? `Часть ${k} из ~${parts}: ` : '', cntPart = cntAll ? Math.max(1, Math.round(cntAll * W / (end - start))) : 0;
           pBase = (k - 1) / parts; pSpan = 1 / parts; pWant = splitOnly ? Math.max(120, W * 8) : Math.max(500, W * 60); setP(0.02);
           st.textContent = tag + 'слушаю трек…';
           let rows = []; try { rows = await listen(file, t, 2, Math.ceil(W / 2)); } catch { /* the Agent still works from the description */ }
@@ -6284,7 +6350,7 @@ function makeRefMode(cfg) {
             ctx: () => ({ long: { sound: 'own', secs: [], clip: true }, refmodes: cards.length ? cards.map(c => ({ name: RMODE.tok(c.name), type: c.type, what: c.what, features: c.features, voice: !!c.voice })) : undefined }),
             images: async () => imgs,
             extra: async () => `\n\n[МУЗЫКАЛЬНЫЙ КЛИП. Трек «${file.name}» целиком ${root._adur.toFixed(1)} с; сейчас работаем только с куском ${mm(t0)}–${mm(t0 + W)} (${W.toFixed(1)} с).` + (parts > 1 ? ` Это часть ${k} из примерно ${parts} большого клипа.` : '') + (prevTxt ? ` Предыдущая часть закончилась сценой: «${prevTxt}». Продолжай сюжет, героев и стиль, не повторяйся.` : '') + ' '
-              + `Раздели ЭТОТ КУСОК на сцены сам, по музыке и сюжету: каждая сцена от 3 до ${step} секунд (целое число), длины РАЗНЫЕ (например 4, 7, 5, ${step}): короткие на быстрых, резких местах, длинные на медленных, на проигрышах и припеве. Границы сцен ставь на смену музыки. Сумма длин всех сцен = ${Math.round(W)} с. `
+              + `Раздели ЭТОТ КУСОК на сцены сам, по музыке и сюжету: каждая сцена от ${mnLen} до ${step} секунд (целое число, короче ${mnLen} и длиннее ${step} нельзя), длины РАЗНЫЕ: короче на быстрых, резких местах, длиннее на медленных, на проигрышах и припеве. Границы сцен ставь на смену музыки. ` + (cntAll ? `Сцен в этом куске должно быть НЕ БОЛЬШЕ ${cntPart}: не дроби кусок мельче, чем нужно. ` : '') + `Сумма длин всех сцен = ${Math.round(W)} с ровно. `
               + 'Ниже примерная энергия (0-9) и активность/ритмичность (0-9) каждых 2 секунд куска (время от начала всего трека):\n'
               + (rows.length ? rows.map((r, i) => `${mm(t0 + i * 2)} э${r.e} а${r.o}` + (vrows ? ` г${vrows[i] || 0}` : '')).join('; ') : '(анализ недоступен, ориентируйся на описание)')
               + (vrows ? '\nг = громкость ГОЛОСА отдельно от музыки (0 = голоса нет, это проигрыш; 1-9 = кто-то поёт). Где голос есть (г от 2), персонаж, если пользователь не написал иначе, ПОЁТ: средние и крупные планы лица, липсинг (пиши в сцене, что персонаж поёт). Где г=0 — проигрыш: танец, действие, место, детали, камера под ритм. Не ставь пение туда, где голоса нет.' : '\nГолос от музыки не отделялся: где поют, определи по описанию пользователя; без указаний не придумывай пение.')
@@ -6294,10 +6360,9 @@ function makeRefMode(cfg) {
               const tt = out.replace(/```(?:prompt|text)?/gi, '').replace(/```/g, '').trim(), list = [], re = /^\s*SCENE\s+(\d+)\s*\|\s*(\d+(?:\.\d+)?)\s*(\|\s*new)?\s*$/gim; let m, last = 0;
               while ((m = re.exec(tt))) { if (list.length) list[list.length - 1].prompt = tt.slice(last, m.index).trim(); list.push({ prompt: '', sec: +m[2], fresh: !!m[3] }); last = re.lastIndex; }
               if (list.length) list[list.length - 1].prompt = tt.slice(last).trim();
-              const clean = list.filter(x => splitOnly || x.prompt).map(x => ({ ...x, prompt: splitOnly ? '' : x.prompt, sec: Math.max(3, Math.min(15, Math.round(x.sec) || step)) }));
+              const clean = list.filter(x => splitOnly || x.prompt).map(x => ({ ...x, prompt: splitOnly ? '' : x.prompt, sec: Math.round(x.sec) || step }));
               if (!clean.length) throw new Error('Агент не вернул сцены в формате SCENE N | S. Нажмите ещё раз.');
-              clean.forEach(x => { x.sec = Math.max(3, Math.min(step, x.sec)); });   // every scene 3..the chosen maximum, the lengths are the Agent's own
-              { const rest = Math.round(W - clean.slice(0, -1).reduce((q, x) => q + x.sec, 0)); if (rest >= 3 && rest <= step) clean[clean.length - 1].sec = rest; }   // the last scene closes the part
+              fitScenes(clean, W, mnLen, step, cntPart);   // every scene min..max, not more than the chosen number of scenes, the sum = the length of the piece
               if (vrows) { let off = 0; clean.forEach(x => { const i0 = Math.floor(off / 2), i1 = Math.max(i0 + 1, Math.ceil((off + x.sec) / 2)), seg = vrows.slice(i0, i1), v = seg.filter(l => l >= 3).length / Math.max(1, seg.length); x.tags = v >= 0.6 ? ['sing'] : ['inst']; x.auto = true; off += x.sec; }); }
               got = clean;
             } }, btn, st);
@@ -6315,7 +6380,8 @@ function makeRefMode(cfg) {
       card.innerHTML = `<div class="card-h"><h3>Сюжет ролика</h3><span style="flex:1"></span><button class="btn mini st-recent" type="button" title="Недавние проекты этой страницы: сцены и готовые клипы восстановятся">🕘 Недавние проекты</button><button class="btn mini st-new" type="button" title="Очистить страницу целиком и начать с чистого листа">🗑 Новый проект</button><button class="btn mini st-prompts" type="button" title="Тексты всех сцен (промпты) в обычный текстовый файл">📝 Сохранить промпты</button><button class="btn mini st-save" type="button" title="Весь проект одним файлом: сцены, тексты, изображения, голоса и готовые сцены. Файл можно перенести на другой компьютер">💾 Сохранить проект</button><label class="btn mini st-load" style="cursor:pointer" title="Открыть проект, сохранённый раньше">📂 Загрузить проект<input type="file" accept=".h3studio,.zip" hidden></label><button class="btn mini st-undo" type="button" title="Вернуть сцены, какими они были до последнего запуска Агента">↶ Назад</button></div>
         <div class="hint" style="margin:0 0 6px;line-height:1.5">Опишите по-своему: кто герой, где происходит, что должно быть в каких сценах (первая сцена, вторая…), какие реплики. Агент разобьёт это на сцены и напишет промпт каждой. Если в сценах ниже уже есть голос персонажа, длина и слова этих сцен берутся из голоса.</div>
         <textarea class="st-all" style="min-height:110px" placeholder="Например: Марк и Лена приезжают на пляж. Сцена 1: общий план, они выходят из машины, Марк говорит «Мы сегодня едем кататься на сёрфингах». Сцена 2: Лена берёт доску и бежит к воде. Сцена 3: Марк ловит первую волну, брызги, крупный план."></textarea>
-        <div style="display:none;gap:12px;align-items:center;flex-wrap:wrap;margin:8px 0 4px"><label>Весь ролик примерно <input class="st-total" inputmode="numeric" value="30" style="width:56px"> секунд</label><label>Сцена не длиннее <select class="st-len clip-len">${[3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].map(n => `<option${n === 10 ? ' selected' : ''}>${n}</option>`).join('')}</select> секунд</label></div>
+        <div style="display:none"><input class="st-total" inputmode="numeric" value="30"></div>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:8px 0 4px">${scLimitsHtml('st-min', 'st-len clip-len', 'st-cnt', 3, 15)}</div>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:6px 0"><button class="btn pri st-split" type="button" title="Агент разделит сюжет на сцены нужной длины и напишет промпт для каждой. Текущие сцены заменятся (можно вернуть кнопкой «Назад»)">✨ Агент: написать сцены и промпты</button><button class="btn st-fill" type="button" title="Агент напишет промпты только для сцен, в которых текста ещё нет, по вашему сюжету. Сцены с текстом не трогаются">Написать промпты пустых сцен</button></div>
         <div class="hint st-st" style="line-height:1.5"></div>`;
       scCard.before(card);
@@ -6356,7 +6422,7 @@ function makeRefMode(cfg) {
           root._undo = [];
           $$('.sc', root).forEach(c => c.remove()); root._run = Math.random().toString(36).slice(2, 12); root._sel = 0;
           $$('.ref .x', imgsEl).forEach(x => x.click()); $$('.sv-media .slot .x', root).forEach(x => x.click()); root._setSrc?.(null);
-          all.value = ''; $('.st-total', card).value = '30'; $('.st-len', card).value = '10';
+          all.value = ''; $('.st-total', card).value = '30'; $('.st-len', card).value = '15'; $('.st-min', card).value = '3'; $('.st-cnt', card).value = '0';
           try { localStorage.removeItem(KEY); localStorage.removeItem('h3-long-last'); localStorage.removeItem('h3-long-projects'); localStorage.setItem('h3-rm-sel-' + cfg.mode, '[]'); } catch {}
           RMB.sel.clear(); rmPaint();
           root._doneIds = new Set(); root._chainReset && root._chainReset(); root._chainPart = null; root._chainEnd = null; root._pending = null; root._multi.clear(); root._chainSet = null; root._sent = {}; root._sentText = {}; root._test = null; root._target = null;
@@ -6385,7 +6451,7 @@ function makeRefMode(cfg) {
         const b = $('.st-save', card); if (b.disabled) return; b.disabled = true; st.textContent = 'Собираю проект…';
         try {
           const proj = root._snap && root._snap(); if (!proj) throw new Error('В проекте пока нечего сохранять');
-          const entries = [], meta = { app: 'h3studio', v: 1, saved: new Date().toISOString(), proj, story: { all: all.value, total: $('.st-total', card).value, len: $('.st-len', card).value }, refs: [], simg: {}, svoice: {}, clips: {}, media: [] };
+          const entries = [], meta = { app: 'h3studio', v: 1, saved: new Date().toISOString(), proj, story: { all: all.value, total: $('.st-total', card).value, len: $('.st-len', card).value, min: $('.st-min', card).value, cnt: $('.st-cnt', card).value }, refs: [], simg: {}, svoice: {}, clips: {}, media: [] };
           $$('.ref', imgsEl).forEach((r, i) => { if (r._file) { const nm = `refs/ref${i}_${safeName(r._file.name)}`; meta.refs.push({ i, name: nm }); entries.push({ name: nm, blob: r._file }); } });
           $$('.sv-media .slot', root).forEach((sl, i) => { if (sl._file) { const nm = `media/m${i}_${safeName(sl._file.name)}`; meta.media.push({ i, name: nm, kind: sl.closest('.sv-vids') ? 'v' : 'a' }); entries.push({ name: nm, blob: sl._file }); } });
           const cs = $$('.sc', root);
@@ -6419,7 +6485,7 @@ function makeRefMode(cfg) {
             for (const r of meta.refs || []) if (z[r.name]) await putInto($$('.ref input', imgsEl)[r.i], mk(r.name, 'image/png'));
             const msl = $$('.sv-media .slot', root);
             for (const m of meta.media || []) if (z[m.name] && msl[m.i]) await putInto($('input', msl[m.i]), mk(m.name, m.kind === 'v' ? 'video/mp4' : 'audio/wav'));
-            all.value = (meta.story || {}).all || ''; if ((meta.story || {}).total) $('.st-total', card).value = meta.story.total; if ((meta.story || {}).len) $('.st-len', card).value = meta.story.len;
+            all.value = (meta.story || {}).all || ''; if ((meta.story || {}).total) $('.st-total', card).value = meta.story.total; if ((meta.story || {}).len) $('.st-len', card).value = meta.story.len; if ((meta.story || {}).min) $('.st-min', card).value = meta.story.min; if ((meta.story || {}).cnt) $('.st-cnt', card).value = meta.story.cnt;
             try { localStorage.setItem(KEY, all.value); } catch {}
             root._setScenes((p.scenes || []).map(x => ({ prompt: x.prompt, sec: x.sec, fresh: !!x.fresh, tags: x.tags || [] })));
             const cs = $$('.sc', root);
@@ -6450,23 +6516,23 @@ function makeRefMode(cfg) {
       bSplit.onclick = async () => {
         if (bSplit.disabled) return;
         const story = all.value.trim(); if (!story) { st.textContent = 'Опишите ролик в поле выше.'; all.focus(); return; }
-        const step = 15;   // the length of the video and of a scene is no longer asked: the agent cuts by the dialogue (a scene is up to 15 s, a phrase is never cut in the middle)
+        const step = +$('.st-len', card).value || 15, mnLen = Math.min(+$('.st-min', card).value || 3, step), cnt = +$('.st-cnt', card).value || 0;   // the length of the video is not asked: the agent cuts by the dialogue (a phrase is never cut in the middle), within the chosen limits of a scene and of the number of scenes
         const voiced = $$('.sc', root).map((c, i) => c._voice ? `сцена ${i + 1}: ${c._voiceDur.toFixed(1)} с, голос говорит «${c._voiceText || '(слова не распознаны)'}»` : '').filter(Boolean);
-        const extra = `\n\n[ВИДЕОСТУДИЯ, ролик без музыки. Общую длину ролика определи сам по сюжету и репликам, ничего не сжимай и не растягивай. Раздели сюжет на сцены: каждая сцена от 3 до ${step} секунд (целое число), длины РАЗНЫЕ по смыслу. Режь по границе реплики: фраза не должна обрываться на полуслове, одна сцена вмещает одну законченную реплику или короткий обмен репликами. Всё, что пользователь описал про конкретные сцены (первая, вторая…), выполни буквально и в том же порядке. ВСЕ реплики из сюжета обязательно должны прозвучать: каждую пиши дословно, на языке пользователя, в \`<d>[Язык] реплика</d>\` в нужной сцене и в том порядке, как в сюжете; кто кому говорит, определи по тексту сюжета (@имя). Ни одну реплику не пропускай и не пересказывай; перед репликой опиши эмоцию и интонацию. Музыку и слова песен не пиши. Сцены должны продолжать друг друга (те же герои, место, свет), если пользователь не просит смену места. Для каждой сцены напиши полный промпт. Ответь блоками \`SCENE N | S\` (S = длина сцены в секундах), под каждым блоком промпт сцены.`
+        const extra = `\n\n[ВИДЕОСТУДИЯ, ролик без музыки. Общую длину ролика определи сам по сюжету и репликам, ничего не сжимай и не растягивай. Раздели сюжет на сцены: каждая сцена от ${mnLen} до ${step} секунд (целое число, короче ${mnLen} и длиннее ${step} нельзя), длины РАЗНЫЕ по смыслу. ${cnt ? `Всего сцен НЕ БОЛЬШЕ ${cnt}: не дроби сюжет мельче, чем нужно. ` : ''}Режь по границе реплики: фраза не должна обрываться на полуслове, одна сцена вмещает одну законченную реплику или короткий обмен репликами. Всё, что пользователь описал про конкретные сцены (первая, вторая…), выполни буквально и в том же порядке. ВСЕ реплики из сюжета обязательно должны прозвучать: каждую пиши дословно, на языке пользователя, в \`<d>[Язык] реплика</d>\` в нужной сцене и в том порядке, как в сюжете; кто кому говорит, определи по тексту сюжета (@имя). Ни одну реплику не пропускай и не пересказывай; перед репликой опиши эмоцию и интонацию. Музыку и слова песен не пиши. Сцены должны продолжать друг друга (те же герои, место, свет), если пользователь не просит смену места. Для каждой сцены напиши полный промпт. Ответь блоками \`SCENE N | S\` (S = длина сцены в секундах), под каждым блоком промпт сцены.`
           + (voiced.length ? ` У некоторых сцен уже есть записанный голос, их длина и слова заданы: ${voiced.join('; ')}. Эти сцены оставь с такой длиной и этой репликой.` : '') + picRule(nPics()) + ']';
         bSplit.disabled = bFill.disabled = true; st.textContent = 'Агент пишет сцены…';
         const ok = await run(story, extra, async out => {
           const tt = out.replace(/```(?:prompt|text)?/gi, '').replace(/```/g, '').trim(), list = [], re = /^\s*SCENE\s+(\d+)\s*\|\s*(\d+(?:\.\d+)?)\s*(\|\s*new)?\s*$/gim; let m, last = 0;
           while ((m = re.exec(tt))) { if (list.length) list[list.length - 1].prompt = tt.slice(last, m.index).trim(); list.push({ prompt: '', sec: +m[2], fresh: !!m[3] }); last = re.lastIndex; }
           if (list.length) list[list.length - 1].prompt = tt.slice(last).trim();
-          const clean = list.filter(x => x.prompt).map(x => ({ ...x, sec: Math.max(3, Math.min(step, Math.round(x.sec) || step)) }));
+          const clean = list.filter(x => x.prompt).map(x => ({ ...x, sec: Math.round(x.sec) || step }));
           if (!clean.length) throw new Error('Агент не вернул сцены в формате SCENE N | S. Нажмите ещё раз.');
-          const old = $$('.sc', root);   // scenes that have a voice keep it, their length follows the voice
+          fitScenes(clean, 0, mnLen, step, 0);   // lengths within min..max; the number of scenes is asked from the Agent: removing a scene would lose its dialogue          const old = $$('.sc', root);   // scenes that have a voice keep it, their length follows the voice
           root._pushUndo(); root._setScenes(clean);
           $$('.sc', root).forEach((c, i) => { const o = old[i]; if (o && o._voice) { c._voice = o._voice; c._voiceDur = o._voiceDur; c._voiceText = o._voiceText; const r = $('input[type=range]', c); r.value = Math.max(3, Math.min(15, Math.ceil(o._voiceDur + 0.2))); r.dispatchEvent(new Event('input', { bubbles: true })); c._voiceUpd && c._voiceUpd(); } });
         }, bSplit, 700);
         bSplit.disabled = bFill.disabled = false;
-        if (ok) { const nn = $$('.sc', root).length; st.textContent = `Готово: сцен ${nn}. Проверьте тексты ниже, поправьте и запускайте. Не понравилось: «↶ Назад».`; doneBanner(`Готово: ${nn} сцен`, 'Промпты написаны по вашему сюжету. Не понравилось: «↶ Назад» в блоке «Сюжет ролика».'); }
+        if (ok) { const nn = $$('.sc', root).length; st.textContent = `Готово: сцен ${nn}. Проверьте тексты ниже, поправьте и запускайте. Не понравилось: «↶ Назад».` + (cnt && nn > cnt ? ` Агент сделал больше выбранных ${cnt}: нажмите «Агент» ещё раз или объедините сцены вручную.` : ''); doneBanner(`Готово: ${nn} сцен`, 'Промпты написаны по вашему сюжету. Не понравилось: «↶ Назад» в блоке «Сюжет ролика».'); }
       };
       bFill.onclick = async () => {
         if (bFill.disabled) return;
@@ -7641,7 +7707,7 @@ presetsPaint();
     const st = S.ready; let body = '';
     if (!st) body = '<div class="card"><div class="hint">Проверяю…</div></div>';
     else if (!st.ready) body = `<div class="card vl-warn"><b>${esc(st.reason || 'Голоса пока недоступны')}</b>
-      ${st.state === 'nonode' ? '<div class="hint" style="margin:8px 0">Установка скачает небольшой модуль и нужные Python-пакеты, это занимает несколько минут. Сам голосовой движок (около 2 ГБ) скачается при первой озвучке. После установки нужно перезапустить ComfyUI.</div><button class="btn pri" id="vlInstall" type="button">Установить модуль голоса</button>' : '<button class="btn" id="vlRecheck" type="button">Проверить ещё раз</button>'}</div>`;
+      ${st.state === 'nonode' ? '<div class="hint" style="margin:8px 0">Установка скачает небольшой модуль и нужные Python-пакеты, это занимает несколько минут. Сам голосовой движок (около 2 ГБ) скачается при первой озвучке. После установки нужно перезапустить ComfyUI.</div><button class="btn pri" id="vlInstall" type="button">Установить модуль голоса</button>' : (st.state === 'restart' ? '<button class="btn pri" id="vlRestart" type="button">Перезапустить программу</button> ' : '') + '<button class="btn" id="vlRecheck" type="button">Проверить ещё раз</button>'}</div>`;
     else if (S.tab === 'saved') body = savedBody();
     else body = `<div class="vl-layout"><div class="vl-left">${leftBody()}</div><div class="vl-split" id="vlSplit" title="Потяните, чтобы изменить ширину. Двойной щелчок — вернуть как было"></div><div id="vlRight">${takesHtml()}</div></div>`;
     root.innerHTML = `<div class="head"><div><h1>Voice Lab</h1><p>Лаборатория голоса: придумайте голос, скопируйте чужой по образцу или озвучьте диалог. Делайте сразу несколько вариантов и выбирайте лучший. Всё считается на вашем компьютере</p></div></div>
@@ -7752,7 +7818,7 @@ presetsPaint();
     S.busy = true; S.stop = false; const n = S.count;
     $('#vlGo').disabled = true; $('#vlGo').textContent = goLabel(); $('#vlStop').hidden = false;
     $('#vlMsg').textContent = S.tab === 'vc' ? 'Первый запуск скачивает модель (около 3 ГБ), дальше каждый вариант занимает меньше минуты' : S.ready.downloaded ? 'Каждый вариант обычно занимает меньше минуты' : 'Первый запуск: скачивается голосовой движок (около 2 ГБ), подождите несколько минут';
-    let err = '', poll = 0;
+    let err = '', poll = 0, fixedErr = false;
     if (S.tab === 'vc') {
       let last = -1, lastGrow = Date.now();
       const gb = b => (b / 1073741824).toFixed(2).replace('.', ',');
@@ -7775,13 +7841,13 @@ presetsPaint();
       try {
         S.abort = new AbortController(); const r = await fetch('/api/voice/generate', { method: 'POST', body: await collect(i), signal: S.abort.signal }), j = await r.json().catch(() => ({}));
         if (r.status === 499) break;
-        if (!r.ok) throw new Error(j.error || 'Не получилось');
+        if (!r.ok) { const e2 = new Error(j.error || 'Не получилось'); e2.fixed = !!j.fixed; throw e2; }
         S.takes.unshift(j); S.ready.downloaded = true;
-      } catch (e) { if (e.name !== 'AbortError') err = e.message; break; }
+      } catch (e) { if (e.name !== 'AbortError') { err = e.message; fixedErr = !!e.fixed; } break; }
       S.pending = []; paintTakes();
     }
     clearInterval(poll); S.pending = []; S.busy = false; S.stop = false;
-    const b = $('#vlGo'); if (b) { b.disabled = false; b.textContent = goLabel(); } const s = $('#vlStop'); if (s) s.hidden = true; const m = $('#vlMsg'); if (m) m.textContent = err;
+    const b = $('#vlGo'); if (b) { b.disabled = false; b.textContent = goLabel(); } const s = $('#vlStop'); if (s) s.hidden = true; const m = $('#vlMsg'); if (m) { m.textContent = err; if (fixedErr) { const rb = document.createElement('button'); rb.className = 'btn pri'; rb.type = 'button'; rb.style.marginLeft = '10px'; rb.textContent = 'Перезапустить программу'; rb.onclick = () => $('#restartBtn').click(); m.append(rb); } }
     paintTakes(); if (err) toast(err);
   }
   async function saveVoice(fd) {
@@ -7853,6 +7919,7 @@ presetsPaint();
       } catch (er) { toast(er.message); b.disabled = false; b.textContent = 'Установить модуль преобразования'; }
       return;
     }
+    if (e.target.closest('#vlRestart')) { $('#restartBtn').click(); return; }
     if (e.target.closest('#vlInstall')) {
       const b = e.target.closest('#vlInstall'); b.disabled = true; b.textContent = 'Устанавливаю… это несколько минут';
       try {
@@ -11153,7 +11220,7 @@ $('#clList').addEventListener('click', e => {
 $('.nav[data-view="models"]').addEventListener('click', loadCL);
 $('#setCustom').onclick = () => $('#navCustom').click();
 $('#cwBack').onclick = () => $('.nav[data-view="models"]').click();
-$('#navCustom').addEventListener('click', () => { $$('.nav').forEach(x => x.classList.toggle('active', x.dataset.view === 'models')); });
+$('#navCustom').addEventListener('click', () => { $$('.nav').forEach(x => x.classList.toggle('active', x.id === 'navCustom')); });
 if (API) {
   connectEvents(); loadStatus(); loadCloud(); pollSystem();
   fetch('/api/status').then(r => r.json()).then(s => {
