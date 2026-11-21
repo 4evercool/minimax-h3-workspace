@@ -68,7 +68,7 @@ CARDS = {
 
 
 CARDS["lipsync"] = {
-    "title": "Lipsync / клип",
+    "title": "Lipsync",
     "text": "Персонаж говорит или поёт под ваше аудио: губы попадают в слова, длина видео равна длине выбранного фрагмента. Два прохода (черновой размер и увеличение). Проверенный workflow Singularity Ref2V с Audio Lock.",
     "file": "lipsync.json",
     "need": "аудио и лицо персонажа (до 9 референсов)",
@@ -104,6 +104,12 @@ CARDS["actionsc"] = {
     "dur": [3, 25],
     "defaults": {"duration": 8, "aspect": "16:9", "mp": 0.9, "speed": 4.0, "dmad": 0.8},
 }
+
+
+CARDS["studio"] = {**CARDS["actionsc"], "wf_default": "2123839054161072130", "title": "Видеостудия",
+                   "text": "Видеостудия на RunningHub: сцены подряд, каждая продолжает последний кадр прошлой. Свой номер workflow и общий API-ключ."}
+CARDS["clip"] = {**CARDS["actionsc"], "wf_default": "2123840263789957122", "title": "Создание клипа",
+                 "text": "Клип под вашу музыку на RunningHub: каждая сцена получает свой кусок песни. Свой номер workflow и общий API-ключ."}
 
 
 CARDS["video"] = {
@@ -158,7 +164,7 @@ def missing(card_id, files):
     c = CARDS[card_id]
     for kind, key, _field, _base in KINDS:
         s = c["slots"].get(kind)
-        if s and s["required"] and not _count(files, key):
+        if s and s["required"] and not _count(files, key) and not (kind == "images" and _count(files, "rvid")):
             return f"Добавьте: {s['label']}"
     if c.get("needs_audio") and not files.get("audio"):
         return "Загрузите аудио"
@@ -242,6 +248,14 @@ def build(card_id, p, files):
             "dense_blocks": "", "min_tokens": 12288, "extra_tokens": 256, "sink_conditioning": "exact_kv_and_rows", "verbose": False}}
         for nid, key in c["accel"]["consumers"]:
             g[nid]["inputs"][key] = ["acc_sparse", 0]
+    rv = [files[k] for k in sorted((k for k in files if re.fullmatch(r"rvid\d+", k) and files[k]), key=lambda k: int(k[4:]))][:3]
+    if rv and cond is not None:   # RefMod: the Reference Mode heroes as <Video N> (after the user's own reference videos, if the card has them)
+        have = len([k for k in cond["inputs"] if k.startswith("ref_videos.ref_video_")])
+        for j, name in enumerate(rv[:max(0, 3 - have)]):
+            nid = str(190 + j)
+            g[nid] = {"class_type": "VHS_LoadVideo", "inputs": {"video": name, "force_rate": 24, "force_size": "Disabled", "custom_width": 0, "custom_height": 0,
+                                                              "frame_load_cap": 360, "skip_first_frames": 0, "select_every_nth": 1, "format": "None"}}
+            cond["inputs"][f"ref_videos.ref_video_{have + j}"] = [nid, 0]
     lo, hi = c["dur"]
     if c.get("direct"):
         g[n["res"]]["inputs"].update(width=int(p["width"]), height=int(p["height"]), length=int(p["frames"]))

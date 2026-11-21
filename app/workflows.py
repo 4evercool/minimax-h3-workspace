@@ -184,7 +184,7 @@ def ref_graph(m, prompt, width, height, seconds, seed, images, videos, audios, s
 ACTOR_SIGMAS = "1, .9882, .973, .9524, .9231, .878, .8, .6316, .4737, .1579, 0"
 
 
-def actor_graph(m, prompt, width, height, seconds, seed, images, audios, realism=None, extra_loras=()):
+def actor_graph(m, prompt, width, height, seconds, seed, images, audios, realism=None, extra_loras=(), videos=()):
     """Acting scenes: first frame + a voice sample, new speech written in the prompt (<d>...</d>).
 
     Same Singularity Ref2V model as the references mode, but with sol-attn sparse attention,
@@ -222,7 +222,7 @@ def actor_graph(m, prompt, width, height, seconds, seed, images, audios, realism
         "18": {"class_type": "SaveVideo", "inputs": {
             "video": ["17", 0], "filename_prefix": "H3Workspace/actor", "format": "auto", "format.codec": "auto"}},
     })
-    loaders = _refs(g, "8", images, (), audios)
+    loaders = _refs(g, "8", images, videos, audios)
     stages = {n: "load" for n in ["1", "2", "3", "4", "5", "6", "7"] + [k for k in g if k.isdigit() and 60 <= int(k) < 70]}
     stages.update({n: "encode" for n in ["8"] + loaders})
     stages.update({"14": "sample", "15": "decode", "16": "decode", "17": "save", "18": "save"})
@@ -422,8 +422,13 @@ def swap_shots_graph(m, shots, width, height, seed, images, video, extra="", pik
 
 # ---------- long video: scenes continue each other (Music-Video / Long-Shot workflow) ----------
 
-def grain_graph(name, strength, seed):
-    """Film-like grain on one clip: KJNodes' per-pixel noise (it differs from frame to frame). strength 0..1; the sound stays."""
+def grain_graph(name, strength, seed, look=None, ref_name=None):
+    """Colour and grain on one clip. Colour first (match to the colour of a reference clip, brightness, contrast, saturation),
+    then film-like grain: KJNodes' per-pixel noise (it differs from frame to frame). strength 0..1 (0: no grain); the sound stays.
+    `look`: {"match": 0..1 strength of the match to `ref_name` (a video in ComfyUI's input folder), "bright", "contrast", "sat": factors, 1.0 = as is}."""
+    look = look or {}
+    if not strength or strength <= 0:
+        return _color_graph(name, look, ref_name)
     # Plain per-pixel colour noise looked like flicker. Film grain is a single-colour (brightness) noise with grains of 2-3 pixels:
     # noise is made at half size on mid-grey, taken from one channel, enlarged back and laid over the picture with «soft light».
     g = {"L": {"class_type": "LoadVideo", "inputs": {"file": name}},
@@ -439,10 +444,85 @@ def grain_graph(name, strength, seed):
          "F": {"class_type": "ImageBlend", "inputs": {"image1": ["N", 0], "image2": ["B", 0], "blend_factor": round(min(1.0, strength * 2), 3), "blend_mode": "soft_light"}},   # measured: 30% (factor 0.3) gave only about 5 of 255 levels, too weak
          "W": {"class_type": "CreateVideo", "inputs": {"images": ["F", 0], "fps": ["N", 2], "audio": ["N", 1]}},
          "S": {"class_type": "SaveVideo", "inputs": {"video": ["W", 0], "filename_prefix": "H3Workspace/grain", "format": "auto", "codec": "auto"}}}
-    return g, {k: "encode" for k in "LNHZIGRMKBF"} | {"W": "decode", "S": "save"}
+    base, ids = _color_nodes(g, ["N", 0], look, ref_name)
+    g["F"]["inputs"]["image1"] = base
+    return g, {k: "encode" for k in "LNHZIGRMKBF"} | {i: "encode" for i in ids} | {"W": "decode", "S": "save"}
 
 
-def _fit_soundtrack(g, stages, names, cuts, timing):
+def _color_nodes(g, base, look, ref_name):
+    """Colour steps over the frames `base` (a node output): match to a reference clip's frame, brightness, contrast, saturation.
+    Returns (the last output, ids of the nodes added). Core nodes AdjustBrightness / AdjustContrast, KJNodes ColorMatch, comfyui-various saturation."""
+    ids = []
+    if ref_name and (look.get("match") or 0) > 0:
+        g["RL"] = {"class_type": "LoadVideo", "inputs": {"file": ref_name}}
+        g["RN"] = {"class_type": "GetVideoComponents", "inputs": {"video": ["RL", 0]}}
+        g["RF"] = {"class_type": "ImageFromBatch", "inputs": {"image": ["RN", 0], "batch_index": 12, "length": 1}}   # a frame half a second in: not the first one, which may be dark
+        g["CM"] = {"class_type": "ColorMatch", "inputs": {"image_ref": ["RF", 0], "image_target": base, "method": "mkl",
+                                                          "strength": round(float(look["match"]), 3), "multithread": True}}
+        ids += ["RL", "RN", "RF", "CM"]
+        base = ["CM", 0]
+    for key, cls, field, name in (("bright", "AdjustBrightness", "images", "CB"), ("contrast", "AdjustContrast", "images", "CC"),
+                                  ("sat", "JWImageSaturation", "image", "CS")):
+        v = look.get(key)
+        if v is not None and abs(float(v) - 1.0) > 0.005:
+            g[name] = {"class_type": cls, "inputs": {field: base, "factor": round(min(2.0, max(0.0, float(v))), 3)}}
+            ids.append(name)
+            base = [name, 0]
+    return base, ids
+
+
+def _color_graph(name, look, ref_name):
+    """Colour only (no grain): the clip with its sound, graded."""
+    g = {"L": {"class_type": "LoadVideo", "inputs": {"file": name}},
+         "N": {"class_type": "GetVideoComponents", "inputs": {"video": ["L", 0]}}}
+    base, ids = _color_nodes(g, ["N", 0], look, ref_name)
+    g["W"] = {"class_type": "CreateVideo", "inputs": {"images": base, "fps": ["N", 2], "audio": ["N", 1]}}
+    g["S"] = {"class_type": "SaveVideo", "inputs": {"video": ["W", 0], "filename_prefix": "H3Workspace/color", "format": "auto", "codec": "auto"}}
+    return g, {k: "encode" for k in ["L", "N"] + ids} | {"W": "decode", "S": "save"}
+
+
+def _mix_tracks(g, stages, base, items, total):
+    """Audio tracks over the base soundtrack. Every item is made exactly `total` seconds long (silence before and after it), so the
+    core AudioMerge only has to add equal-length pieces. items: dicts name (file in ComfyUI input), at (second on the timeline),
+    a (from which second of the file), dur, vol (dB, whole number)."""
+    if base is None:
+        g["B0"] = {"class_type": "EmptyAudio", "inputs": {"duration": round(total, 3), "sample_rate": 48000, "channels": 2}}
+        base = ["B0", 0]
+        stages["B0"] = "decode"
+    for j, it in enumerate(items):
+        at = max(0.0, float(it["at"]))
+        dur = min(float(it["dur"]), total - at)
+        if dur < 0.05:
+            continue
+        p = f"X{j}"
+        g[p + "L"] = {"class_type": "LoadAudio", "inputs": {"audio": it["name"]}}
+        g[p + "T"] = {"class_type": "TrimAudioDuration", "inputs": {"audio": [p + "L", 0], "start_index": round(float(it.get("a") or 0), 3), "duration": round(dur, 3)}}
+        piece, ids = [p + "T", 0], [p + "L", p + "T"]
+        vol = int(round(float(it.get("vol") or 0)))
+        if vol:
+            g[p + "V"] = {"class_type": "AudioAdjustVolume", "inputs": {"audio": piece, "volume": max(-100, min(100, vol))}}
+            piece = [p + "V", 0]
+            ids.append(p + "V")
+        if at > 0.005:
+            g[p + "E"] = {"class_type": "EmptyAudio", "inputs": {"duration": round(at, 3), "sample_rate": 48000, "channels": 2}}
+            g[p + "F"] = {"class_type": "AudioConcat", "inputs": {"audio1": [p + "E", 0], "audio2": piece, "direction": "after"}}
+            piece = [p + "F", 0]
+            ids += [p + "E", p + "F"]
+        tail = total - at - dur
+        if tail > 0.005:
+            g[p + "G"] = {"class_type": "EmptyAudio", "inputs": {"duration": round(tail, 3), "sample_rate": 48000, "channels": 2}}
+            g[p + "H"] = {"class_type": "AudioConcat", "inputs": {"audio1": piece, "audio2": [p + "G", 0], "direction": "after"}}
+            piece = [p + "H", 0]
+            ids += [p + "G", p + "H"]
+        g[p + "M"] = {"class_type": "AudioMerge", "inputs": {"audio1": base, "audio2": piece, "merge_method": "add"}}
+        ids.append(p + "M")
+        for i_ in ids:
+            stages[i_] = "decode"
+        base = [p + "M", 0]
+    return base
+
+
+def _fit_soundtrack(g, stages, names, cuts, timing, starts=None, mute=None):
     """One soundtrack for the whole montage, built clip by clip: the sound of each clip is cut or padded with silence to the exact
     length of ITS picture, so the small differences (a few hundredths of a second per clip) do not add up over many clips.
     `timing[i]` = (picture seconds, sound seconds or None). Returns the audio output to give to ConcatenateVideo or None."""
@@ -450,17 +530,27 @@ def _fit_soundtrack(g, stages, names, cuts, timing):
         return None
     out = None
     for i, (vdur, adur) in enumerate(timing):
-        want = round(min(vdur, cuts[i]) if cuts and i < len(cuts) and cuts[i] else vdur, 3)
+        st0 = float(starts[i]) if starts and i < len(starts) and starts[i] else 0.0   # the clip is cut from this second on
+        left = max(0.1, vdur - st0)
+        want = round(min(left, cuts[i]) if cuts and i < len(cuts) and cuts[i] else left, 3)
+        if mute and i < len(mute) and mute[i]:   # the user took the sound of this clip away
+            adur = None
         if adur is None:   # a clip without sound: silence of its length
             piece = [f"Q{i}", 0]
             g[f"Q{i}"] = {"class_type": "EmptyAudio", "inputs": {"duration": want, "sample_rate": 48000, "channels": 2}}
         else:
             g[f"A{i}"] = {"class_type": "LoadAudio", "inputs": {"audio": names[i]}}
             piece = [f"A{i}", 0]
-            if adur > want:
-                g[f"R{i}"] = {"class_type": "TrimAudioDuration", "inputs": {"audio": piece, "start_index": 0.0, "duration": want}}
-                piece = [f"R{i}", 0]
-            elif want - adur > 0.002:
+            have = max(0.0, adur - st0)   # sound that is there from the cut point on
+            if st0 > 0.001 or adur > st0 + want + 0.002:
+                if have < 0.05:   # the cut point is past the sound: silence
+                    g[f"Q{i}"] = {"class_type": "EmptyAudio", "inputs": {"duration": want, "sample_rate": 48000, "channels": 2}}
+                    piece, have = [f"Q{i}", 0], want
+                else:
+                    g[f"R{i}"] = {"class_type": "TrimAudioDuration", "inputs": {"audio": piece, "start_index": round(st0, 3), "duration": round(min(want, have), 3)}}
+                    piece = [f"R{i}", 0]
+            adur = have if st0 > 0.001 or adur > st0 + want + 0.002 else adur
+            if want - adur > 0.002 and piece != [f"Q{i}", 0]:
                 g[f"E{i}"] = {"class_type": "EmptyAudio", "inputs": {"duration": round(want - adur, 3), "sample_rate": 48000, "channels": 2}}
                 g[f"P{i}"] = {"class_type": "AudioConcat", "inputs": {"audio1": piece, "audio2": [f"E{i}", 0], "direction": "after"}}
                 piece = [f"P{i}", 0]
@@ -472,7 +562,7 @@ def _fit_soundtrack(g, stages, names, cuts, timing):
     return out
 
 
-def montage_graph(names, sizes, cuts=None, timing=None):
+def montage_graph(names, sizes, cuts=None, timing=None, music=None, starts=None, mute=None, tracks=None, total=None):
     """Join clips end to end with ComfyUI's own nodes (no ffmpeg). Clips of another size than the first one are scaled to it
     first: the join node refuses clips of different sizes. `sizes`: (width, height) per clip or None when unknown."""
     g, ins, stages = {}, {}, {}
@@ -481,8 +571,12 @@ def montage_graph(names, sizes, cuts=None, timing=None):
         g[f"L{i}"] = {"class_type": "LoadVideo", "inputs": {"file": name}}
         stages[f"L{i}"] = "encode"
         src = [f"L{i}", 0]
-        if cuts and i < len(cuts) and cuts[i]:   # the clip is trimmed: only its first seconds are used
-            g[f"T{i}"] = {"class_type": "Video Slice", "inputs": {"video": src, "start_time": 0.0, "duration": float(cuts[i]), "strict_duration": False}}
+        st0 = float(starts[i]) if starts and i < len(starts) and starts[i] else 0.0
+        has_cut = bool(cuts and i < len(cuts) and cuts[i])
+        if has_cut or st0 > 0.001:   # the clip is trimmed: a piece of it from `st0` on, `cuts[i]` seconds (or to the end)
+            vdur = timing[i][0] if timing and i < len(timing) and timing[i] else None
+            dur = float(cuts[i]) if has_cut else (max(0.1, vdur - st0) if vdur else 3600.0)
+            g[f"T{i}"] = {"class_type": "Video Slice", "inputs": {"video": src, "start_time": round(st0, 3), "duration": round(dur, 3), "strict_duration": False}}
             stages[f"T{i}"] = "encode"
             src = [f"T{i}", 0]
         if first and sizes[i] and tuple(sizes[i]) != tuple(first):
@@ -494,7 +588,20 @@ def montage_graph(names, sizes, cuts=None, timing=None):
             src = [f"V{i}", 0]
         ins[f"videos.video{i}"] = src
     g["C"] = {"class_type": "ConcatenateVideo", "inputs": {**ins, "codec": "auto"}}
-    sound = _fit_soundtrack(g, stages, names, cuts, timing)
+    if music:   # a music clip: ONE piece of the original song under the whole video (no clicks at the joins of separate sounds)
+        m_name, m_start, m_len = music
+        g["MA"] = {"class_type": "LoadAudio", "inputs": {"audio": m_name}}
+        g["MT"] = {"class_type": "TrimAudioDuration", "inputs": {"audio": ["MA", 0], "start_index": round(m_start, 3), "duration": m_len}}
+        g["C"]["inputs"]["complete_audio"] = ["MT", 0]
+        stages.update({"MA": "decode", "MT": "decode"})
+        sound = None
+    else:
+        sound = _fit_soundtrack(g, stages, names, cuts, timing, starts, mute)
+    if tracks and total:   # the user's own audio tracks laid over the sound of the clips
+        sound = _mix_tracks(g, stages, sound if sound else (["MT", 0] if music else None), tracks, total)
+        g["C"]["inputs"]["complete_audio"] = sound
+        stages.update({k: "decode" for k in g if k[:1] in "AEJPQR" and k[1:].isdigit()})
+        sound = None
     if sound:
         g["C"]["inputs"]["complete_audio"] = sound
         stages.update({k: "decode" for k in g if k[:1] in "AEJPQR" and k[1:].isdigit()})
@@ -641,7 +748,18 @@ def _audio_continue(add, old_audio, new_audio, ov, total):
     return [add("SetLatentNoiseMask", samples=[cut2, 0], mask=[mask, 0]), 0]
 
 
-def long_graph(m, scenes, width, height, seed, images, audio=None, start=0.0, pika=None, extra_loras=(), ref_size="match", vocals=None, preview=None, fresh=(), audio_cont=False, draft=False):
+def _scene_voice(add, voice, lead, total):
+    """The recording of a scene's voice as the sound of the whole scene: silence over the overlap with the previous scene (`lead`, s),
+    then the voice, then silence up to the scene's full length (`total` frames)."""
+    v = [add("LoadAudio", audio=voice), 0]
+    if lead > 0:
+        v = [add("AudioConcat", audio1=[add("EmptyAudio", duration=round(lead, 3), sample_rate=48000, channels=2), 0], audio2=v, direction="after"), 0]
+    pad = add("EmptyAudio", duration=round(total / FPS, 3), sample_rate=48000, channels=2)
+    v = [add("AudioConcat", audio1=v, audio2=[pad, 0], direction="after"), 0]
+    return [add("TrimAudioDuration", audio=v, start_index=0.0, duration=round(total / FPS, 3)), 0]
+
+
+def long_graph(m, scenes, width, height, seed, images, audio=None, start=0.0, pika=None, extra_loras=(), ref_size="match", vocals=None, preview=None, fresh=(), audio_cont=False, draft=False, videos=(), audios=()):
     """Scenes [(prompt, seconds), ...] rendered one after another; every next scene continues the last second of the
     previous one (latent cut + noise mask), with the same reference pictures, and optionally follows a music track.
 
@@ -676,9 +794,14 @@ def long_graph(m, scenes, width, height, seed, images, audio=None, start=0.0, pi
         total, ov = p["total"], p["ov"]
         ref = add("MiniMaxH3ReferenceToVideo", clip=["5", 0], vae=["6", 0], audio_vae=["7", 0], prompt=prompt,
                   width=width, height=height, length=total, ref_image_size=ref_size)
-        _refs(g, ref, own or images, base=1000 + 10 * i)
+        _refs(g, ref, own or images, videos=videos, audios=audios, base=1000 + 40 * i)
         new = add("LTXVSeparateAVLatent", av_latent=[ref, 1])
-        if audio:
+        voice = sc[3] if len(sc) > 3 and sc[3] else None   # this scene has the user's own voice: the model hears it and speaks with it
+        if voice:
+            enc = add("VAEEncodeAudio", audio=_scene_voice(add, voice, ov / FPS, total), vae=["7", 0])
+            amask = add("SolidMask", value=0.0, width=round(total * 5 / 3), height=2)
+            a_lat = [add("SetLatentNoiseMask", samples=[enc, 0], mask=[amask, 0]), 0]
+        elif audio:
             ptr = start + (p["acc_before"] - ov) / FPS if i else start
             trim = add("TrimAudioDuration", audio=heard, start_index=round(ptr, 3), duration=round(total / FPS, 3))
             enc = add("VAEEncodeAudio", audio=[trim, 0], vae=["7", 0])
@@ -700,7 +823,7 @@ def long_graph(m, scenes, width, height, seed, images, audio=None, start=0.0, pi
             both = add("ImageBatch", image1=[black, 0], image2=[white, 0])
             vmask = add("ImageToMask", image=[both, 0], channel="red")
             v_lat = [add("SetLatentNoiseMask", samples=[cut2, 0], mask=[vmask, 0]), 0]
-            if audio_cont and not audio:   # the sound made by the model continues the sound of the previous scene (no jump at the join)
+            if audio_cont and not audio and not voice:   # the sound made by the model continues the sound of the previous scene (no jump at the join)
                 a_lat = _audio_continue(add, [old, 1], [new, 1], ov, total)
         lat = add("LTXVConcatAVLatent", video_latent=v_lat, audio_latent=a_lat)
         noise = add("RandomNoise", noise_seed=seed + 100 * i)
@@ -748,7 +871,7 @@ LONG_STATE_TOKENS = 17   # latent tokens of the last second(s) of a scene that t
 
 
 def long_part_graph(m, scenes, k, width, height, seed, images, audio=None, start=0.0, pika=None, extra_loras=(),
-                    ref_size="match", vocals=None, state=None, preview=None, src=None, cont_plan=False, fresh=(), draft=False):
+                    ref_size="match", vocals=None, state=None, preview=None, src=None, cont_plan=False, fresh=(), draft=False, videos=(), quiet=False, audios=()):
     """Scene number `k` (0-based) of the long video as its own job. Scene 0 starts fresh; scene k > 0 continues from the saved
     latent tail of scene k-1 (`state`, a .latent file in ComfyUI's input folder). The clip it saves has the overlap with the
     previous scene cut off, so the clips join end to end. Also saves the tail of its own latent for scene k+1."""
@@ -779,11 +902,20 @@ def long_part_graph(m, scenes, k, width, height, seed, images, audio=None, start
     ref = add("MiniMaxH3ReferenceToVideo", clip=["5", 0], vae=["6", 0], audio_vae=["7", 0], prompt=sc[0],
               width=width, height=height, length=total, ref_image_size=ref_size)
     own = list(sc[2]) if len(sc) > 2 and sc[2] else []   # this scene's own references; none: the common ones are used
-    _refs(g, ref, own or images, base=100)
+    _refs(g, ref, own or images, videos=videos, audios=audios, base=100)
     new = add("LTXVSeparateAVLatent", av_latent=[ref, 1])
-    if audio:
+    voice = sc[3] if len(sc) > 3 and sc[3] else None   # the user's own voice recording for THIS scene (file in ComfyUI input)
+    vsrc = _scene_voice(add, voice, ov / FPS if (cont or (k > 0 and not new_shot)) else 0.0, total) if voice else None
+    if voice:
+        enc = add("VAEEncodeAudio", audio=vsrc, vae=["7", 0])
+        amask = add("SolidMask", value=0.0, width=round(total * 5 / 3), height=2)
+        a_lat = [add("SetLatentNoiseMask", samples=[enc, 0], mask=[amask, 0]), 0]
+    elif audio:
         ptr = max(0.0, start - ov / FPS) if cont else start + ((p["acc_before"] - ov) / FPS if k else 0)
-        trim = add("TrimAudioDuration", audio=heard, start_index=round(ptr, 3), duration=round(total / FPS, 3))
+        if quiet:   # nobody sings in this scene (backing vocals, ad-libs, a break): the model hears silence, so it has nothing to lip-sync to
+            trim = add("EmptyAudio", duration=round(total / FPS, 3), sample_rate=48000, channels=2)
+        else:
+            trim = add("TrimAudioDuration", audio=heard, start_index=round(ptr, 3), duration=round(total / FPS, 3))
         enc = add("VAEEncodeAudio", audio=[trim, 0], vae=["7", 0])
         amask = add("SolidMask", value=0.0, width=round(total * 5 / 3), height=2)
         a_lat = [add("SetLatentNoiseMask", samples=[enc, 0], mask=[amask, 0]), 0]
@@ -820,7 +952,9 @@ def long_part_graph(m, scenes, k, width, height, seed, images, audio=None, start
     img = add("VAEDecode", samples=[smp, 1], vae=["6", 0])
     clip_len = total - ov
     frames_out = [img, 0] if ((not k and not cont) or new_shot) else [add("ImageFromBatch", image=[img, 0], batch_index=ov, length=clip_len), 0]
-    if audio:
+    if voice:
+        aud = [add("TrimAudioDuration", audio=vsrc, start_index=round(ov / FPS if (cont or (k > 0 and not new_shot)) else 0.0, 3), duration=round(clip_len / FPS, 3)), 0]
+    elif audio:
         a0 = start + (p["acc_before"] / FPS if k else 0)
         aud = [add("TrimAudioDuration", audio=["11", 0], start_index=round(a0, 3), duration=round(clip_len / FPS, 3)), 0]
     else:
@@ -851,7 +985,7 @@ def action_sizes(width, height):
 
 
 def action_part_graph(m, scenes, k, width, height, seed, images, loras, preview=None, state=None, fresh=(), faithful=False,
-                      refiner_args=None, single=False, sing=False, steps=12, audio=None, start=0.0, vocals=None, audios=()):
+                      refiner_args=None, single=False, sing=False, steps=12, audio=None, start=0.0, vocals=None, audios=(), videos=()):
     """ACTION scene number `k` (0-based) of a scene-by-scene video, the same idea as long_part_graph (scene k continues the saved
     latent tail of scene k-1, the clip is cut off at the overlap) but with the action model: hybrid, DMAD + Speed Slider,
     8 steps at 0.6x size, learned latent upscale, 4 steps at full size. The sound is made by the model, unless `audio` (the user's
@@ -908,7 +1042,7 @@ def action_part_graph(m, scenes, k, width, height, seed, images, loras, preview=
     ref = add("MiniMaxH3ReferenceToVideo", clip=["4", 0], vae=["5", 0], audio_vae=["6", 0], prompt=sc[0],
               width=lw, height=lh, length=total, ref_image_size="max")
     own = list(sc[2]) if len(sc) > 2 and sc[2] else []
-    _refs(g, ref, own or images, audios=audios, base=100)   # up to 3 audio samples (voice, music, atmosphere): the model listens, the sound is still its own
+    _refs(g, ref, own or images, videos=videos, audios=audios, base=100)   # RefMod videos of the cards (<Video N>); up to 3 audio samples (voice, music, atmosphere): the model listens, the sound is still its own
     new = add("LTXVSeparateAVLatent", av_latent=[ref, 1])
     stages = {}
     old_full = None
@@ -1019,7 +1153,7 @@ def action_part_graph(m, scenes, k, width, height, seed, images, loras, preview=
     return g, stages
 
 
-def action_graph(m, prompt, width, height, seconds, seed, images, audios, faithful, loras, preview=None):
+def action_graph(m, prompt, width, height, seconds, seed, images, audios, faithful, loras, preview=None, videos=()):
     """PM Minimax H3 Best Action Workflow (Prompt Mastery): hybrid model, sol-attn, 8 low-res + 4 high-res steps.
 
     faithful=True runs the original SelfLiftH3Sampler + H3SigmaRefiner; otherwise the same schedule is
@@ -1098,7 +1232,7 @@ def action_graph(m, prompt, width, height, seconds, seed, images, audios, faithf
         "23": {"class_type": "SaveVideo", "inputs": {
             "video": ["22", 0], "filename_prefix": "H3Workspace/action", "format": "auto", "format.codec": "auto"}},
     })
-    loaders = _refs(g, "8", images, (), audios)
+    loaders = _refs(g, "8", images, videos, audios)
     stages = {n: "load" for n in ["1", "2", "3", "4", "5", "6", "7"] + [k for k in g if k.isdigit() and 60 <= int(k) < 70]}
     if preview:
         stages["30"] = "load"
@@ -1112,23 +1246,56 @@ def lipsync_scale(quality):
     return 2.0 if QUALITY.get(quality, 0) >= 1824 * 1024 else 1.5
 
 
-def lipsync_prompt(text, n_refs, n_videos=0):
+def lipsync_prompt(text, n_refs, n_videos=0, cam_videos=(), n_audio=0, audio_labels=(), audio_start=0):
     """Wrap free text into H3's structured prompt unless the user already wrote one.
-    Reference videos are tagged <Video N> as the official workflow asks; with pictures present the face comes from the pictures."""
+    Reference videos are tagged <Video N> as the official workflow asks; with pictures present the face comes from the pictures.
+    A text that starts with RefMod definitions ("<Subject 1> is Name ... in <Video 1>. <Audio 1> is the voice-timbre reference ...")
+    keeps them as their own first paragraph: those heroes are NOT shown as pictures at 0.00 seconds (that made a face fill the frame)."""
     if "integrated_multimodal_description" in text:
         return text
+    defs = ""
+    if text.startswith("<Subject "):
+        defs, _, text = text.partition("\n\n")
+        defs += "\n\n"
     refs = " ".join(f"<Picture {i}> (from [Shot 1]) is fully referenced." for i in range(1, n_refs + 1))
     if n_videos:
         vids = ", ".join(f"<Video {i}>" for i in range(1, n_videos + 1))
         refs += f" {vids} {'is' if n_videos == 1 else 'are'} referenced for motion, camera and setting only."
         if n_refs:
             refs += " The faces and identities must match the reference pictures exactly."
-    return (f"For the target video, at 0.00 seconds into the target video, {refs}\n\n"
-            f"integrated_multimodal_description: [Shot 1] {text}\n\n"
-            "overall_soundscape: N/A\n\nnon_diegetic_music: N/A")
+    if cam_videos:   # the user's own camera / motion reference videos (numbered after the Reference Mode videos)
+        cv = ", ".join(f"<Video {i}>" for i in cam_videos)
+        refs += f" {cv} {'is' if len(cam_videos) == 1 else 'are'} referenced for camera movement and motion only; the characters and the place come from the reference pictures."
+    if n_audio:   # voice / sound references
+        av = ", ".join(f"<Audio {i}>" for i in range(audio_start + 1, audio_start + n_audio + 1))
+        refs += f" {av} {'is' if n_audio == 1 else 'are'} referenced for the voice timbre and the sound only, not for the words."
+        who = {"man": "the man", "woman": "the woman", "child": "the child"}
+        tone = {"man": "male ", "woman": "female ", "child": "child's "}
+        labs = list(audio_labels) + [""] * max(0, n_audio - len(audio_labels))
+        # the voice is tied to the speaker: (S1) speaks with the timbre heard in <Audio N> (the way the H3 guide asks for a voice reference); only timbre and manner, new words
+        bind = [f"{who.get(l, 'the speaker')} (S{k}) speaks with the exact {tone.get(l, '')}voice timbre, accent and manner heard in <Audio {audio_start + k}>"
+                for k, l in enumerate(labs[:n_audio], 1)]
+        bind = [b[0].upper() + b[1:] if k == 0 else b for k, b in enumerate(bind)]
+        refs += " " + "; ".join(bind) + ". Copy only the voice timbre and manner, do not play or reuse the audio, generate new speech with the words written below, spoken aloud and clearly audible."
+        if n_audio > 1:   # a dialogue
+            refs += " Each character speaks only with their own voice."
+    head = f"For the target video, at 0.00 seconds into the target video, {refs}\n\n" if refs.strip() else ""
+    sound, music, keep = "N/A", "N/A", []
+    for ln in text.split("\n"):   # the agent writes the sound of the scene on its own lines: they go to their own fields
+        m = re.match(r"\s*(overall_soundscape|non_diegetic_music)\s*:\s*(.+)", ln, re.I)
+        if m:
+            if m.group(1).lower() == "overall_soundscape":
+                sound = m.group(2).strip()
+            else:
+                music = m.group(2).strip()
+        else:
+            keep.append(ln)
+    text = "\n".join(keep).strip()
+    return (defs + head + f"integrated_multimodal_description: [Shot 1] {text}\n\n"
+            f"overall_soundscape: {sound}\n\nnon_diegetic_music: {music}")
 
 
-def lipsync_graph(m, prompt, width, height, seconds, seed, audio, ref_images, scale, ref_size="max", extra_loras=()):
+def lipsync_graph(m, prompt, width, height, seconds, seed, audio, ref_images, scale, ref_size="max", extra_loras=(), videos=()):
     """MiniMax H3 Singularity Ref2V + Audio Lock, two passes.
 
     width/height are pass 1 size; pass 2 upscales the latent by `scale`.
@@ -1188,6 +1355,8 @@ def lipsync_graph(m, prompt, width, height, seconds, seed, audio, ref_images, sc
         node_id = str(30 + i)
         g[node_id] = {"class_type": "LoadImage", "inputs": {"image": image}}
         g["8"]["inputs"][f"ref_images.ref_image_{i}"] = [node_id, 0]
+    if videos:   # RefMod videos of the cards: the heroes as <Video N>
+        _refs(g, "8", [], videos, (), base=40)
     if extra_loras:  # optional LoRAs go in front of the speed LoRA, as in the original workflow
         g["3"]["inputs"]["model"] = _lora_chain(g, ["2", 0], list(extra_loras))
 

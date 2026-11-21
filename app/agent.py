@@ -66,6 +66,9 @@ DEFAULT_SKILL_SETTINGS = {
     "storyboard": {"mode": "off", "keywords": []},
     "qwen-image-2-1-director-prompt": {"mode": "off", "keywords": []},
     "minimax-h3-image": {"mode": "off", "keywords": []},
+    # the screenwriter / director chat («Написать сценарий» in the LLM page): only for that target
+    "rezhisser-scenarist": {"mode": "off", "keywords": []},
+    "drama-minimax-h3": {"mode": "off", "keywords": []},
     "akterskaya-igra": {"mode": "auto", "keywords": [
         "актер", "актёр", "диалог", "реплик", "эмоци", "игра", "драм", "ссор", "спор", "плач", "слез", "слёз",
         "прощан", "признан", "разговор", "говорит", "говорят", "кричит", "шепчет", "обид", "ревн", "страх",
@@ -77,9 +80,10 @@ DEFAULT_SKILL_SETTINGS = {
 IMAGE_SKILLS = {"plist": "krea-2", "krea": "krea-2", "fluxt": "flux2-klein", "qwent": "qwen-image-2-1-director-prompt",
                 "qwen": "qwen-image-2-1-director-prompt", "h3t": "minimax-h3-image", "h3e": "minimax-h3-image", "sheet": "karta-personazha", "sheet6": "karta-personazha",
                 "story": "storyboard", "outpaint": "qwen-image-2-1-director-prompt", "inpaint": "qwen-image-2-1-director-prompt"}
-AGENT_TARGETS = ("video", "lipsync", "refs", "actor", "swap", "action", "actionsc", "long") + tuple(IMAGE_SKILLS)
+SCRIPT_SKILLS = ("rezhisser-scenarist", "akterskaya-igra", "drama-minimax-h3")   # the three pillars of the screenwriter chat; the director is the main one
+AGENT_TARGETS = ("chat", "script", "video", "lipsync", "refs", "actor", "swap", "action", "actionsc", "long") + tuple(IMAGE_SKILLS)
 # long extra reference files that would not fit next to the rest into the model's context
-SKIP_REFS = {"platform-adapters.md", "long-form-writing.md"}
+SKIP_REFS = {"platform-adapters.md", "long-form-writing.md", "h3-format.md"}
 
 
 def pick_variant(hw):
@@ -131,6 +135,11 @@ class Skills:
         self.config.update(skills=all_s)
 
     def active(self, chat_text, target="video", model=None):
+        if target == "chat":  # the plain LLM chat: no skills at all
+            return []
+        if target == "script":  # the screenwriter / director: its two skills only
+            by = {s["id"]: s for s in self.list()}
+            return [by[i] for i in SCRIPT_SKILLS if i in by]   # the director first: he is the main one
         if target in IMAGE_SKILLS:  # a picture prompt: only its own skill, the video skills would mislead the model
             ids = [IMAGE_SKILLS[target]]
             if model == "h3img" and target in ("story", "sheet", "sheet6"):   # a storyboard / sheet for MiniMax H3 Image: its own writing rules too
@@ -145,6 +154,9 @@ class Skills:
                 res.append(s)
             elif s["mode"] == "auto" and any(re.search(r"\b" + re.escape(k), text) for k in s["keywords"]):
                 res.append(s)
+        if target == "long":   # the Video studio / clip: always the Hailuo H3 prompt rules (the main skill) and the acting skill; the screenwriter and the drama stay on the LLM page
+            by = {s["id"]: s for s in self.list()}
+            res = [by[i] for i in ("hailuo-h3", "akterskaya-igra") if i in by] + [s for s in res if s["id"] not in ("hailuo-h3", "akterskaya-igra")]
         # always-on skills first: the prompt prefix stays the same, so the model reuses its cache
         return sorted(res, key=lambda s: s["mode"] != "always")
 
@@ -158,27 +170,91 @@ class Skills:
                          + ref.read_text(encoding="utf-8", errors="replace").strip())
         return "\n\n".join(parts)
 
-    def save_upload(self, files):
-        """files: list of (relative_path, bytes). Returns the new skill id."""
-        skill_md = next((p for p, _ in files if Path(p).name.lower() == "skill.md"), None)
-        if not skill_md:
-            raise ValueError("В загрузке нет файла SKILL.md")
-        root = Path(skill_md).parent
-        meta, _ = parse_frontmatter(next(b for p, b in files if p == skill_md).decode("utf-8", errors="replace"))
-        sid = re.sub(r"[^\w\-]+", "-", meta.get("name") or root.name or "skill").strip("-").lower() or "skill"
+    @staticmethod
+    def _text(data):
+        """The text of an uploaded file: UTF-8 (with or without BOM), else the Windows Cyrillic code page."""
+        try:
+            return data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            return data.decode("cp1251", errors="replace")
+
+    @staticmethod
+    def _expand(files):
+        """Zip / .skill archives are opened in memory (no path escapes, size-limited); other files stay as they are."""
+        import io
+        out, total = [], 0
+        for name, data in files:
+            if name.lower().endswith((".zip", ".skill")):
+                try:
+                    zf = zipfile.ZipFile(io.BytesIO(data))
+                except zipfile.BadZipFile:
+                    raise ValueError(f"Архив «{Path(name).name}» повреждён или это не zip.")
+                for info in zf.infolist():
+                    n = info.filename.replace("\\", "/")
+                    if info.is_dir() or n.startswith("/") or ".." in n.split("/") or "__MACOSX" in n:
+                        continue
+                    total += info.file_size
+                    if total > 20_000_000 or len(out) > 400:
+                        raise ValueError("Архив слишком большой для скилла (скилл - это текстовые файлы, обычно меньше мегабайта).")
+                    out.append((n, zf.read(info)))
+            else:
+                out.append((name, data))
+        return out
+
+    def _write_skill(self, sid, items):
+        """items: [(relative path inside the skill, text)]."""
         dest = self.user_dir / sid
         if dest.exists():
             shutil.rmtree(dest)
-        for p, data in files:
-            rel = Path(p).relative_to(root) if root != Path(".") and Path(p).is_relative_to(root) else Path(Path(p).name)
-            if rel.suffix.lower() not in (".md", ".txt"):
-                continue
+        for rel, text in items:
             target = (dest / rel).resolve()
             if dest.resolve() not in target.parents:
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
-        return sid
+            target.write_text(text, encoding="utf-8")
+
+    def save_upload(self, files):
+        """files: list of (path, bytes): a skill folder (with SKILL.md), a zip / .skill archive of it, or single .md / .txt
+        files with the skill text. Several skills at once are fine. Returns the ids of the skills added."""
+        files = self._expand(files)
+        texts = (".md", ".markdown", ".txt")
+        ids = []
+        skill_mds = [p for p, _ in files if Path(p).name.lower() == "skill.md"]
+        for sm in skill_mds:
+            root = Path(sm).parent
+            meta, _ = parse_frontmatter(self._text(next(b for p, b in files if p == sm)))
+            sid = re.sub(r"[^\w\-]+", "-", meta.get("name") or root.name or "skill").strip("-").lower() or "skill"
+            items = []
+            for p, data in files:
+                if Path(p).suffix.lower() not in texts:
+                    continue
+                if root == Path("."):
+                    rel = Path(p)
+                elif Path(p).is_relative_to(root):
+                    rel = Path(p).relative_to(root)
+                else:
+                    continue
+                if rel.name.lower() == "skill.md":
+                    rel = rel.with_name("SKILL.md")
+                items.append((rel, self._text(data)))
+            self._write_skill(sid, items)
+            ids.append(sid)
+        if not skill_mds:   # no SKILL.md: every plain text file is a skill of its own
+            for p, data in files:
+                if Path(p).suffix.lower() not in texts:
+                    continue
+                text = self._text(data)
+                meta, body = parse_frontmatter(text)
+                name = meta.get("name") or Path(p).stem
+                if not meta:
+                    first = next((ln.strip("# ").strip() for ln in body.splitlines() if ln.strip()), name)
+                    text = "---\nname: " + re.sub(r"[\r\n:]+", " ", name).strip() + "\ndescription: " + re.sub(r"[\r\n]+", " ", first)[:200] + "\n---\n\n" + text
+                sid = re.sub(r"[^\w\-]+", "-", name).strip("-").lower() or "skill"
+                self._write_skill(sid, [(Path("SKILL.md"), text)])
+                ids.append(sid)
+        if not ids:
+            raise ValueError("Не нашёл скилл. Подойдёт файл .md или .txt, архив .zip или папка с файлом SKILL.md.")
+        return ids
 
     def delete(self, sid):
         d = self.user_dir / sid
@@ -186,10 +262,91 @@ class Skills:
             shutil.rmtree(d)
 
 
+def _clean(s, limit):
+    """One line of the user's own text for the system prompt: no line breaks or code fences that could break its format."""
+    return re.sub(r"[\r\n`]+", " ", str(s or "")).strip()[:limit]
+
+
+VIDEO_RM_TARGETS = ("lipsync", "refs", "actor", "action", "long", "actionsc")   # every video section with references (not Image-to-Video: first/last frame only): ticked Reference Mode cards = @name
+
+
+def refmode_rules(cards, target):
+    """The Reference Mode cards the user ticked in the chat: who the heroes are, so the Agent writes @name and not their looks."""
+    if target not in VIDEO_RM_TARGETS + ("script",) or not isinstance(cards, list):
+        return ""
+    kinds = {"character": "персонаж", "vehicle": "автомобиль", "object": "предмет", "location": "локация"}
+    rows = []
+    for c in cards[:6]:
+        if not isinstance(c, dict):
+            continue
+        name = re.sub(r"[^\w\-]", "", str(c.get("name") or ""))[:40]
+        if not name:
+            continue
+        row = f"- @{name} ({kinds.get(c.get('type'), 'персонаж')})"
+        if _clean(c.get("what"), 200):
+            row += f": {_clean(c.get('what'), 200)}"
+        if _clean(c.get("features"), 400):
+            row += f". Ключевое: {_clean(c.get('features'), 400)}"
+        if c.get("voice"):
+            row += ". Есть образец голоса"
+        rows.append(row)
+    if not rows:
+        return ""
+    if target == "script":
+        return ("ГЕРОИ ИЗ REFERENCE MODE: пользователь уже создал героев (карточки). Они сохранены в приложении:\n" + "\n".join(rows) + "\n"
+                "- Напиши сценарий именно про этих героев: их типы, особенности и характер должны влиять на сюжет, конфликт и юмор. "
+                "Не придумывай им другую внешность и не меняй то, что указано в карточке. Если героев мало для истории, можно добавить второстепенных, "
+                "но главными остаются карточки.\n"
+                "- В сценарии и раскадровке называй героев по именам. В промптах для H3 называй их ТОЛЬКО так: @имя (с @, как в списке): приложение "
+                "само заменит @имя на описание и подаст изображения карточки. Внешность этих героев в промптах не описывай.\n"
+                "- Если пользователь не знает, какую историю придумать, предложи 3 коротких варианта сюжета с этими героями (по 2-3 предложения) "
+                "и спроси, какой развивать.")
+    voice = ("В этом разделе образец голоса карточки подаётся модели как аудио-референс (до 3 образцов): реплики этого героя пиши от его лица."
+             if target in ("actionsc", "actor", "refs", "action") else
+             "В этом разделе образец голоса не подаётся (только изображения и описание): голос сделает модель, совпадение голоса не обещай.")
+    return ("REFERENCE MODE: пользователь отметил в чате готовые карточки героев (имя, изображения, описание). Они уже сохранены в приложении:\n"
+            + "\n".join(rows) + "\n"
+            "- Называй этих героев в тексте сцены ТОЛЬКО так: @имя (с @, ровно как в списке). Приложение само заменит @имя на имя героя, "
+            "добавит в сцену строку с описанием и подаст изображения карточки как референсы.\n"
+            "- Внешность, одежду, возраст и причёску этих героев НЕ описывай и теги <Picture N> на них НЕ ставь: изображения карточек получают номера сами. "
+            "Теги <Picture N> только для картинок, приложенных к чату. Если картинок в чате нет, это нормально: правило «картинок нет, опиши героя словами» "
+            "к героям из карточек не относится.\n"
+            "- Реплики пиши в <d>[Язык] ...</d> и называй, кто говорит: `@имя says: <d>[English] ...</d>`. Если пользователь дал слова, вставь их дословно "
+            "и без правок; если не дал и они нужны, коротко придумай по одной реплике на 2-3 секунды сцены или спроси. " + voice + "\n"
+            "- Приложение само допишет в начало промпта строки RefMod: `<Subject N> is имя ... in <Video N>`, `<Audio N> is the voice-timbre reference for <Subject N> (S N)` "
+            "и пометит говорящего (S N). Эти строки, теги <Subject>/<Video>/<Audio> и номера спикеров сам НЕ пиши: только @имя и `@имя says: <d>[English] ...</d>`.\n"
+            "- Не придумывай героев, которых нет в списке: для остальных действуй по обычным правилам.")
+
+
 def system_prompt(skills_text, target, ctx):
     """App rules first (they decide the output format), then the skills."""
     dur = ctx.get("duration")
     n_img = ctx.get("images", 0)
+    if target == "chat":
+        import datetime as _dt
+        _n = _dt.datetime.now()
+        _wd = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")[_n.weekday()]
+        _mo = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря")[_n.month - 1]
+        return ("Ты - обычный помощник (LLM) внутри приложения Minimax H3 Workspace. Отвечай на языке пользователя, по делу. "
+                f"Сейчас по часам компьютера пользователя: {_wd}, {_n.day} {_mo} {_n.year} года, {_n:%H:%M}. Если спрашивают число, день недели или время - отвечай по этим данным. "
+                "У тебя нет доступа к интернету: погоду, новости, курсы и другие данные «на сегодня» ты узнать не можешь. Не выдумывай их: честно скажи, что у тебя нет выхода в интернет, и предложи помощь по-другому. "
+                "Можешь писать и править тексты, идеи, сценарии, промпты для любых моделей и отвечать на любые вопросы. "
+                "Если пользователь приложил изображения, смотри на них и опирайся на них."
+                + (("\n\nПользователь выбрал для этого чата скиллы. Работай строго по ним, их правила важнее общих привычек:\n\n" + skills_text) if skills_text.strip() else ""))
+    if target == "script":
+        base_script = ("Ты - сценарист и режиссёр-постановщик внутри приложения Minimax H3 Workspace. Работай строго по скиллам ниже: "
+                "«Режиссёр-сценарист» (идея -> сценарий, раскадровка, стиль, темпоритм), «Актёрская игра» (эмоции, интонация, мимика, жесты) и «Драма» (сценарий -> серия промптов по 15 секунд для MiniMax H3).\n"
+                "- Главный скилл «Режиссёр-сценарист»: он работает всегда. Из «Актёрской игры» бери эмоции и подачу реплик, из «Драмы» бери структуру сцены, "
+                "реплики дословно и формат H3, когда история драматическая или пользователь просит драму или промпты.\n"
+                "- Общайся на языке пользователя. Если не хватает важного (герой, место, настроение, длина), задай 2-3 коротких вопроса, потом пиши.\n"
+                "- По умолчанию пиши сценарий и раскадровку для пользователя. Готовые английские промпты для H3 по 15 секунд пиши только когда "
+                "пользователь просит «промпты», «для H3» или «драма»; каждый промпт клади в отдельный блок ```prompt.\n"
+                "- Изображения героев, если приложены, используй как референс внешности.\n"
+                "- Если среди героев сценария есть те, кого пользователь ещё не завёл как карточки Reference Mode, в конце ответа дай короткий список: "
+                "имя, тип (персонаж, животное, автомобиль, предмет, локация), одна строка «кто это» и приметы для карточки (цвет волос и глаз, одежда, особенности). "
+                "Скажи, что их можно сохранить в разделе Reference Mode.")
+        _rm = refmode_rules(ctx.get("refmodes"), target)
+        return base_script + (("\n\n" + skills_text) if skills_text.strip() else "") + ("\n\n" + _rm if _rm else "")   # the texts of the three skills are the rules of this chat
     if target == "lipsync":
         mode_rules = (
             "Режим приложения: LIPSYNC (Singularity Ref2V + Audio Lock). Видео делается по референс-картинкам и "
@@ -390,7 +547,7 @@ def system_prompt(skills_text, target, ctx):
                "(куплет, припев, проигрыш), раздели сцены по ним, иначе делай сцены по 10 секунд."
                if sound == "own" else
                "ЗВУК: своего аудио нет, модель сама делает звук по тексту. Реплики героев пиши в <d>[Язык] ...</d> на языке "
-               "пользователя, и одной короткой фразой в конце сцены напиши фоновый звук и музыку за кадром."
+               "пользователя; фоновый звук и музыку за кадром пиши отдельными строками overall_soundscape и non_diegetic_music (см. формат ответа)."
                if sound == "none" else
                "ЗВУК: если пользователь не сказал, с песней ролик или без, спроси одним вопросом. С песней слова песни в текст "
                "не пиши (модель их слышит), без песни реплики героев пиши в <d>[Язык] ...</d>.")
@@ -425,18 +582,77 @@ def system_prompt(skills_text, target, ctx):
             "начинай ТАКУЮ сцену как НОВЫЙ ПЛАН: добавь в строку заголовка слово new: `SCENE 3 | 8 | new`. Новый план не продолжает "
             "прошлую сцену, а строится заново по референс-картинкам, поэтому качество в нём как в первой сцене. Продолжение "
             "(без new) оставляй только там, где действие идёт одним кадром без разрыва, и не больше 3 сцен подряд;\n"
+            "- ПРАВИЛА MINIMAX H3 (скилл Hailuo H3 главный для написания промпта, следуй ему дословно; актёрская игра: эмоции, интонация, мимика): 1) после ролей картинок первым идёт ВИЗУАЛЬНЫЙ СТИЛЬ "
+            "(`Live-action, cinematic, ...`): бери стиль из слов пользователя, свой не выдумывай; если стиль не назван, а в сюжете живые люди "
+            "и обычное место, пиши `Live-action, cinematic`, иначе в конце ответа одной строкой спроси стиль; 2) потом стартовая композиция, "
+            "действие по нарастающей (начало, изменение, итог/реакция), НЕ статичная картинка; 3) камера: тип движения + амплитуда + скорость "
+            "одним естественным предложением (`Push In with small amplitude at slow speed`, `Static Shot`, `Pan Left`, `Arc Shot`, `Tracking Shot`), "
+            "не просто `medium shot`; 4) диалог: говорящему при первом появлении даёшь устойчивый ID и описание голоса (возраст, тембр, темп) и ЭМОЦИЮ "
+            "вне блока реплики, сама реплика дословно в `<d>[Язык] ...</d>`: `@Имя says, in a quiet, teasing tone: <d>[Russian] ...</d>`, "
+            "если двое, у каждого свой ID `(S1)`, `(S2)` и своя интонация, слушающий реагирует лицом и позой; сцену режь по границе реплики, "
+            "фраза не обрывается; 5) без абстракций вроде «тёплая интимная атмосфера»: только то, что видно и слышно;\n"
             f"- {snd}\n"
             "ФОРМАТ ОТВЕТА: ровно ОДИН блок prompt. Внутри сцены по порядку, каждая начинается отдельной строкой "
             "`SCENE N | S`, где N номер сцены, S длина в секундах (целое 3-15), а дальше один абзац обычного английского "
-            "текста. БЕЗ полей `integrated_multimodal_description`, `[Shot 1]`, таймкодов и `overall_soundscape`: приложение "
-            "добавит обёртку само. После последней сцены НИЧЕГО не пиши в блоке (никаких overall_soundscape, non_diegetic_music "
-            "и других полей): звук описывай внутри текста сцены. Пример:\n"
+            "текста (это содержимое поля integrated_multimodal_description). БЕЗ `integrated_multimodal_description`, `[Shot 1]` и таймкодов: "
+            "приложение добавит обёртку само. ПОСЛЕ абзаца КАЖДОЙ сцены с новой строки добавь две строки: `overall_soundscape: ...` "
+            "(1-4 предложения на английском: только физические фоновые звуки сцены, без диалогов и музыки; `N/A` только если "
+            "пользователь просит полную тишину) и `non_diegetic_music: ...` (1-3 предложения: инструменты, темп, ритм; `N/A`, если музыки "
+            "не должно быть). Не пиши музыку в одном месте и `N/A` в другом. Пример:\n"
             "SCENE 1 | 10\n<Picture 1> is the character reference (keep this face exactly). <Picture 2> is the location reference. "
             "A knight <Picture 1> stands in the ruined throne room <Picture 2>, slowly raising a glowing guitar. "
-            "Camera pushes in from wide to medium shot. Red glow, drifting ash.\n\n"
+            "Camera pushes in from wide to medium shot. Red glow, drifting ash.\n"
+            "overall_soundscape: Distant crackle of fire, falling ash and a low stone echo.\n"
+            "non_diegetic_music: Slow distorted electric guitar over deep drums at a heavy tempo.\n\n"
             "SCENE 2 | 10\n<Picture 1> is the character reference (keep this face exactly). <Picture 2> is the location reference. "
             "The knight <Picture 1> in the ruined throne room <Picture 2> starts playing fiercely, head tilted back. "
             "Camera circles him at chest height. Flickering ghostly light on the walls.")
+        if lg.get("clip"):   # the music-clip page: full prompts, not the short ones of the plain studio
+            mode_rules += (
+                f"\n\nКАРТИНКИ КЛИПА: к чату приложено РОВНО {n_img} картинок(и). Используй ТОЛЬКО теги <Picture 1>"
+                + (f"…<Picture {n_img}>" if n_img > 1 else "") +
+                ", других номеров не бывает. Если на одной картинке несколько ракурсов, раскадровка или лист героя (крупный и общий план рядом), "
+                "это всё равно ОДНА картинка с ОДНИМ номером: не называй её части <Picture 2>, <Picture 3> и не придумывай картинку одежды или "
+                "локации, которой нет. Примеры с <Picture 2> выше только образец формата: берись за них, лишь если картинок действительно больше одной."
+                "\n\nРЕЖИМ «СОЗДАНИЕ КЛИПА»: ЭТИ ПРАВИЛА ВАЖНЕЕ пунктов выше про краткость («одно главное действие», «камера одной фразой»). "
+                "Промпт КАЖДОЙ сцены должен быть полным, как для профессионального клипа по правилам MiniMax H3 из скилла: это ОДИН плотный "
+                "абзац на английском в 110-180 слов (после фразы про роли картинок), а не 2-3 коротких предложения. Что должно быть в абзаце:\n"
+                "1) крупность плана и ракурс (wide / medium / close-up, высота камеры, угол) и ОБЪЕКТИВ: фокусное расстояние и глубина резкости;\n"
+                "2) КАМЕРА И ПЛЁНКА: если пользователь просит реализм, кино, синематик, документальную или рекламную съёмку, ПИШИ, на что это "
+                "снято: например `shot on ARRI Alexa 35`, `ARRI Alexa Mini LF with 35mm anamorphic lenses`, `RED V-Raptor`, `Sony Venice 2`, "
+                "`clean digital cinema image`; подбирай под жанр и держи ОДНУ и ту же камеру и объективное семейство во всех "
+                "сценах клипа, меняя только крупность. Если стиль не реалистичный (аниме, 3D-мультфильм, иллюстрация, стилизация), пиши "
+                "соответствующие этому стилю термины вместо камеры;\n"
+                "3) ДВИЖЕНИЕ КАМЕРЫ со скоростью и характером (slow push-in, handheld with subtle sway, gimbal orbit, crane up, whip pan) "
+                "и движение героя по долям сцены (сначала..., затем..., в конце...), согласованное с ритмом и энергией этого куска музыки;\n"
+                "4) СВЕТ и ЦВЕТ: источник и направление света, температура, контраст, цветокоррекция (teal-orange, warm golden hour, soft diffusion), "
+                "атмосфера (haze, dust, rain), фактуры (кожа, ткань, поверхности), мелкие детали места;\n"
+                "5) ГЕРОЙ: поза, выражение лица, эмоция, одежда как в картинке, действие. Если у сцены стоит метка «поёт»: пиши, что герой "
+                "поёт в камеру, губы точно совпадают с вокалом (clear lip-sync), видно дыхание и мимику; если «проигрыш»: герой не поёт, "
+                "рот закрыт; если «танцы»: опиши танец и ритм движений;\n"
+                "6) ЗВУК внутри абзаца одной фразой: характер музыки в этот момент, дыхание, шум места. Слова песни сам НЕ придумывай и не пиши: приложение допишет к сцене с меткой «поёт» точные слова на языке песни по распознаванию, твоё дело написать, что героиня поёт в камеру с точным липсинком.\n"
+                "Пиши КОНКРЕТНО и зрительно, без воды и общих слов («beautiful», «amazing» не нужны). Сохраняй единый мир клипа: те же герой, "
+                "одежда, камера и цветокоррекция, меняются только место, крупность, ракурс и действие. Формат ответа не меняется: блоки "
+                "`SCENE N | S` и абзац под каждым.\n\n"
+                "СЮЖЕТ: описание клипа от пользователя - это ПОЖЕЛАНИЯ и набор примерных кадров (герой, места, крупности, движения), а не "
+                "жёсткая раскадровка и не тайминг. Отталкивайся от них, но сюжет выстраивай САМ, как режиссёр (скилл режиссёра), по ходу музыки: "
+                "ритм, энергия и вокал куска подсказывают, где крупные планы деталей (бретелька, глаза, губы, руки, волосы), где средние и общие, "
+                "где движение героя. Меняй локации и ракурсы по сюжету, повторяй идеи из пожеланий в разных сочетаниях. Скилл режиссёра "
+                "используй только для замысла и драматургии, формат ответа и длины сцен остаются как выше.\n\n"
+                "ДЛИНА СЦЕН (жёстко, это правило важнее пожелания пользователя о других длинах): обычные сцены 3-4 секунды. Сцены с меткой «поёт» "
+                "(липсинг) 5-8 секунд, длину выбирай по фразе вокала: границы ставь в паузах между фразами, НИКОГДА посреди слова или строки, "
+                "и не делай ровных одинаковых длин подряд. Не превышай максимум, "
+                "заданный пользователем.\n"
+                "СМЕНА ПЛАНА ВНУТРИ СЦЕНЫ: сцена 5 секунд и длиннее НЕ держит один и тот же план. Сцена 5 секунд: два плана по ~2.5 с. Сцена "
+                "6-8 секунд: два плана примерно по половине (разная крупность и ракурс, например close-up, затем wide или medium). Пиши это в "
+                "абзаце по долям: `0-2.5s: close-up ...; cut to 2.5-5s: medium shot ...`, с резкой монтажной склейкой, без плавного перетекания. "
+                "Сцены 3-4 секунды: один план.\n"
+                "ВИД КАДРА (очень важно): это современное чистое цифровое видео. НИКОГДА не пиши слова про плёнку и её дефекты, даже с отрицанием "
+                "(видеомодель реагирует на сами слова и рисует старую плёнку): film, grain, scratches, dust, hair, flicker, jitter, "
+                "gate weave, light leaks, burn, sprocket, frame borders, vintage, Kodak, print и т.п. Описывай вид ТОЛЬКО позитивно. В конец КАЖДОГО "
+                "промпта добавляй одной фразой: `clean sharp digital cinema image, natural skin texture, rich neutral color grading, "
+                "stable smooth continuous motion`. Камеру и объективы называть можно."
+            )
     elif target == "actionsc":
         lg = ctx.get("long") or {}
         secs = lg.get("secs") or []
@@ -555,6 +771,18 @@ def system_prompt(skills_text, target, ctx):
             "одной строкой подскажи «Правка изображения» → «Лист персонажа» → модель MiniMax H3 Image.\n"
             "- Каждый кадр и лист рисуются крупно (около 4 МП), поэтому описывай детали, которые будут видны (одежда, материалы, "
             "свет).")
+    rm_rules = refmode_rules(ctx.get("refmodes"), target)   # cards of Reference Mode chosen in the chat (video studios only)
+    if rm_rules:
+        if target in VIDEO_RM_TARGETS:
+            # the heroes come from Reference Mode cards: they must be named @name, never <Picture N> (the rules below are for the user's own pictures)
+            mode_rules = ("ГЛАВНОЕ ПРАВИЛО ДЛЯ ЭТОГО ЗАПРОСА: герои выбраны в Reference Mode. Везде, где ниже сказано назвать героя/персонажа/"
+                          "предмет/локацию через <Picture N> и в примерах с <Picture 1>, для героев из списка ниже ПИШИ @имя (например `@Katerina stands ...`). "
+                          "НЕ пиши `<Picture 1> is the character reference`, НЕ пиши роль картинок для героев из списка и НЕ ставь на них теги <Picture N>: "
+                          "приложение само заменит @имя на описание, подаст изображения и голос карточки. Теги <Picture N> используй только для "
+                          "картинок, которые пользователь сам загрузил в раздел как свои референсы (если их нет, тегов не будет вообще). "
+                          "В КАЖДОЙ сцене называй героя как @имя заново.\n\n" + rm_rules + "\n\n" + mode_rules)
+        else:
+            mode_rules += "\n\n" + rm_rules
     intro = ("Ты - агент-художник внутри приложения Minimax H3 Workspace. Пользователь описывает картинку или правку, может приложить "
              "картинки. Ты пишешь готовый промпт для модели картинок по правилам скилла ниже."
              if target in IMAGE_SKILLS else

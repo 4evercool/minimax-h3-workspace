@@ -50,16 +50,24 @@ class Config:
 def detect_hardware(install_dir=None):
     hw = {"nvidia": False, "gpu": None, "vram_gb": 0, "compute_cap": 0, "driver": 0, "ram_gb": 0, "disk_free_gb": None}
     try:
-        out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name,memory.total,compute_cap,driver_version", "--format=csv,noheader,nounits"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=10, creationflags=CREATE_NO_WINDOW).stdout
+        def smi(fields):
+            return subprocess.run(["nvidia-smi", f"--query-gpu={fields}", "--format=csv,noheader,nounits"],
+                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=10,
+                                  creationflags=CREATE_NO_WINDOW).stdout
+        out = smi("name,memory.total,compute_cap,driver_version")
+        has_cc = True
+        if not out.strip() or "not a valid field" in out:
+            # old drivers do not know compute_cap: ask without it
+            has_cc = False
+            out = smi("name,memory.total,driver_version")
         gpus = [[x.strip() for x in line.split(",")] for line in out.strip().splitlines() if line.strip()]
         if gpus:
             best = max(gpus, key=lambda g: float(g[1]))  # pick the card with most memory
-            hw.update(nvidia=True, gpu=best[0].replace("NVIDIA GeForce ", ""),
-                      vram_gb=round(float(best[1]) / 1024), compute_cap=float(best[2]))
+            hw.update(nvidia=True, gpu=best[0].replace("NVIDIA GeForce ", ""), vram_gb=round(float(best[1]) / 1024))
+            if has_cc:
+                hw["compute_cap"] = float(best[2])
             try:
-                hw["driver"] = float(best[3])
+                hw["driver"] = float(best[3 if has_cc else 2])
             except (IndexError, ValueError):
                 pass
     except Exception:
@@ -75,6 +83,10 @@ def detect_hardware(install_dir=None):
         ms = MemStatus(dwLength=ctypes.sizeof(MemStatus))
         ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms))
         hw["ram_gb"] = round(ms.ullTotalPhys / 1024 ** 3)
+        hw["ram_free_gb"] = round(ms.ullAvailPhys / 1024 ** 3, 1)
+        # commit limit = RAM + paging file; what is still free of it. When it runs low, Windows swaps the models to disk and the first step crawls
+        hw["commit_limit_gb"] = round(ms.ullTotalPageFile / 1024 ** 3, 1)
+        hw["commit_free_gb"] = round(ms.ullAvailPageFile / 1024 ** 3, 1)
     except Exception:
         pass
 

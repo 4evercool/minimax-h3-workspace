@@ -50,9 +50,12 @@ def windows_version():
 
 def nvidia_smi_info():
     try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version,memory.total,compute_cap",
-                              "--format=csv,noheader"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=10,
-                             creationflags=NO_WINDOW).stdout.strip()
+        def smi(f):
+            return subprocess.run(["nvidia-smi", f"--query-gpu={f}", "--format=csv,noheader"], stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL, text=True, timeout=10, creationflags=NO_WINDOW).stdout.strip()
+        out = smi("name,driver_version,memory.total,compute_cap")
+        if not out or "not a valid field" in out:
+            out = smi("name,driver_version,memory.total")
         return out or "nvidia-smi ничего не вернул (нет видеокарты NVIDIA или не установлен драйвер)"
     except FileNotFoundError:
         return "nvidia-smi не найден (нет драйвера NVIDIA)"
@@ -128,7 +131,8 @@ def build(info):
     L.append(f"Windows: {windows_version()}")
     L.append(f"Процессор: {cpu_name()}")
     hw = info.get("hw") or {}
-    L.append(f"Память (ОЗУ), ГБ: {hw.get('ram_gb')}")
+    L.append(f"Память (ОЗУ), ГБ: {hw.get('ram_gb')}, свободно сейчас: {hw.get('ram_free_gb')}")
+    L.append(f"Лимит памяти Windows (ОЗУ + файл подкачки), ГБ: {hw.get('commit_limit_gb')}, свободно сейчас: {hw.get('commit_free_gb')}")
     L.append(f"Свободно на диске установки, ГБ: {hw.get('disk_free_gb')}")
     L.append("Видеокарта NVIDIA (name, driver, memory, compute): " + nvidia_smi_info())
     L.append(f"Определено приложением: видеокарта={hw.get('gpu')}, видеопамять ГБ={hw.get('vram_gb')}, "
