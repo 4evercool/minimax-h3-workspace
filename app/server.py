@@ -45,6 +45,7 @@ import rhstudio
 import speech
 import updater
 import voicelab
+import watchdog
 from version import APP_VERSION
 
 
@@ -4019,11 +4020,21 @@ class App:
                     continue
                 age, silent = now - job.get("t0", now), now - job.get("last_ev", job.get("t0", now))
                 if pid in queued_ids:
-                    if job["state"] == "running" and silent > 600:
-                        # ComfyUI still holds the job but has been silent for 10 minutes: a hung node.
-                        # (Legit quiet phases like loading a huge model from disk are covered by the threshold.)
+                    if job["state"] == "running" and silent > watchdog.QUIET_NOTICE:
+                        # ComfyUI still holds the job: a long take spends ~20 minutes on one sampling step,
+                        # so silence alone is not a hang — only hours of it with an idle card are
+                        gpu = await asyncio.to_thread(self.monitor.gpu)
+                        busy = None if not gpu else (gpu.get("util") or 0) >= 5
+                        if watchdog.job_verdict(True, silent, busy) == "notice":
+                            if not job.get("quiet_notice"):
+                                job["quiet_notice"] = True
+                                await self.broadcast({"type": "notice", "text":
+                                    "Долгий шаг: ComfyUI молчит больше 10 минут. Это не зависание — "
+                                    "длинный клип считает один шаг десятки минут, ждём."})
+                            continue
                         if self.process:   # managed engine: restart it, like «Остановить генерацию» does
-                            text = "Генерация зависла: ComfyUI молчит больше 10 минут. Перезапускаем движок, это займёт около минуты."
+                            text = ("Генерация не подаёт признаков жизни больше двух часов, а видеокарта простаивает. "
+                                    "Перезапускаем движок, это займёт около минуты.")
                             self.note_error(text)
                             await self.broadcast({"type": "notice", "text": text})
                             try:
@@ -4040,8 +4051,9 @@ class App:
                                                           **({"message": "Генерация зависла в ComfyUI и была снята при перезапуске движка. "
                                                                           "Отправьте её ещё раз."} if jid == pid else {})})
                         else:
-                            await self._stale_job(job, "Генерация зависла в вашем ComfyUI (больше 10 минут без ответа). "
-                                                       "Закройте окно ComfyUI и запустите его заново, затем отправьте генерацию ещё раз.")
+                            await self._stale_job(job, "Генерация не подаёт признаков жизни больше двух часов, "
+                                                       "а видеокарта при этом простаивает. Проверьте окно ComfyUI "
+                                                       "и отправьте генерацию ещё раз.")
                     continue
                 if job["state"] == "queued" and age > 240:
                     _, hist = await self.comfy_json("GET", f"/history/{pid}")
