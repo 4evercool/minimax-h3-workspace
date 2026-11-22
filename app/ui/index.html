@@ -9454,7 +9454,9 @@ async function agStatus() {
       + (s.vision ? 'Изображения видит (найден mmproj). ' : '<span class="warn-t">Файла mmproj нет — изображения агент не увидит.</span> ')
       + (s.installed ? '' : 'Осталось скачать движок llama.cpp (37 МБ).')
     : `<b style="color:var(--text)">${esc(s.title)}</b> — бесплатная локальная модель (Apache 2.0), понимает русский и изображения. `
-      + (s.installed ? 'Пока агент работает, генерация видео ждёт: обе модели вместе не помещаются в видеопамять — приложение переключает их само.' : `Нужно скачать один раз: ~${(s.size / 1e9).toFixed(1)} ГБ.`);
+      + (s.installed ? 'Пока агент работает, генерация видео ждёт: обе модели вместе не помещаются в видеопамять — приложение переключает их само.' : `Нужно скачать один раз: ~${(s.size / 1e9).toFixed(1)} ГБ.`)
+      + (s.engine && s.engine.title ? ` Движок: ${esc(s.engine.title)}.` : '')
+      + (s.placement && s.placement.where === 'CPU' ? ' <span class="warn-t">Сейчас считает на процессоре (видеопамять занята) — будет медленно.</span>' : '');
   const nReady = (s.variants || []).filter(o => o.have).length + (s.my_model ? 1 : 0);
   $('#agVarBox > summary').textContent = `Выбор моделей агента (готово: ${nReady} из ${(s.variants || []).length + (s.my_model ? 1 : 0)})`;
   $('#agVariants').innerHTML = (s.my_model ? `<button class="agv${s.my_model.current ? ' on' : ''}" type="button" data-my="1"><b>Моя модель: ${esc(s.my_model.title)}</b><span class="tg">ваша</span><span class="rd ok">✓ ГОТОВО${s.my_model.current ? ' · ВЫБРАНА' : ''}</span></button>` : '')

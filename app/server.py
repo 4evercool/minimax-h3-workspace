@@ -4340,6 +4340,8 @@ class App:
             "speech_ready": self.speech_status()["ready"], "speech_size": speech.MODEL_SIZE + speech.WHISPER_ZIP_SIZE,
             "speech": self.speech_status(),
             "installed": self.llm.installed(variant), "running": self.llm.alive(),
+            "engine": self.llm.backend(),
+            "placement": self.llm.placement() if self.llm.alive() else None,
             "installing": bool(self.agent_installer), "dir": str(self.llm.root), "managed": self.config.get("engine") == "managed",
             "dir_chosen": bool(self.config.get("llm_dir")) or self.config.get("engine") == "managed",
             "skills": [self.skill_public(s) for s in self.skills.list()],
@@ -4375,7 +4377,7 @@ class App:
             try:
                 await ag.install(self.agent_installer, self.llm.root, variant,
                                  runtime_only=bool(self.config.get("llm_custom")),
-                                 whisper_dir=self.config.get("whisper_dir"))
+                                 whisper_dir=self.config.get("whisper_dir"), hw=self.hw)
                 await emit({"step": "agent", "state": "done", "label": "Модель агента установлена"})
             except engine.Cancelled:
                 await emit({"step": "agent", "state": "cancelled", "label": "Скачивание остановлено"})
