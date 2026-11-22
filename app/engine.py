@@ -247,7 +247,7 @@ class Installer:
             return
         dest.parent.mkdir(parents=True, exist_ok=True)
         part = dest.with_name(dest.name + ".part")
-        if size_hint:  # say it now rather than in an hour: is there room for the rest?
+        if size_hint:  # сказать сразу, а не через час: хватит ли места на остаток?
             have = part.stat().st_size if part.exists() else 0
             need = max(0, size_hint - have)
             try:
@@ -290,7 +290,7 @@ class Installer:
                 await asyncio.sleep(min(30, 3 + attempt * 3))
         got = part.stat().st_size if part.exists() else 0
         if size_hint and got < size_hint * 0.98:
-            # a short file must not become a "ready" model: a bogus 416 would do exactly that
+            # недокачанный файл не должен стать «готовой» моделью: ложный 416 делает именно это
             part.unlink(missing_ok=True)
             raise RuntimeError(f"«{label}»: файл пришёл не целиком ({got / 1e9:.1f} из {size_hint / 1e9:.1f} ГБ). "
                                "Повторите скачивание — оно начнётся заново.")

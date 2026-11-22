@@ -1,8 +1,8 @@
-"""The watchdog must not call a long sampling step a hang.
+"""Вотчдог не должен считать долгий шаг генерации зависанием.
 
-Seen in the field: a 243-frame take at 864x480 spent ~21 minutes on one step of eight, and the app
-declared a hang after ten minutes, telling the user to restart ComfyUI — which would have destroyed
-the render that was, in fact, running at 100 % GPU.
+Случай из жизни: клип на 243 кадра при 864x480 тратил ~21 минуту на один шаг из восьми,
+а приложение объявляло зависание через десять минут и советовало перезапустить ComfyUI —
+это уничтожило бы рендер, который всё это время считался на GPU на 100 %.
 """
 import sys
 from pathlib import Path
@@ -18,7 +18,7 @@ def test_short_silence_is_fine():
 
 
 def test_long_step_raises_a_notice_not_an_error():
-    # 21 minutes without an event, the card is busy: exactly the case that used to be called a hang
+    # 21 минута без событий, карта занята: ровно тот случай, что раньше звали зависанием
     assert watchdog.job_verdict(True, 21 * 60, True) == "notice"
     assert watchdog.job_verdict(True, 3600, True) == "notice"
 

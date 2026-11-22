@@ -1,9 +1,9 @@
-"""Checks for the engine build choice and the download guards. No network, no GPU needed.
+"""Проверки выбора сборки движка и страховок при скачивании. Сеть и GPU не нужны.
 
-The bug these pin down: the agent used to fetch a Vulkan-only llama.cpp build, and on a machine
-where the Vulkan loader has no registered driver the engine silently ran on the CPU (~6 tok/s
-instead of ~105 on the same RTX 4090). Now the build is chosen by GPU, verified with
-`llama-server --list-devices`, and the download refuses to start without room on disk.
+Эти тесты закрепляют баг: агент всегда качал llama.cpp только с Vulkan, а на машине,
+где у загрузчика Vulkan нет зарегистрированного драйвера, движок молча считал на процессоре
+(~6 ток/с вместо ~105 на той же RTX 4090). Теперь сборка выбирается по видеокарте, проверяется
+через `llama-server --list-devices`, а скачивание отказывается стартовать без места на диске.
 """
 import asyncio
 import json
@@ -19,7 +19,7 @@ import engine  # noqa: E402
 
 
 class FakeInstaller:
-    """Stands in for engine.Installer: no downloads, progress events go nowhere."""
+    """Заменяет engine.Installer: ничего не качает, события прогресса никуда не уходят."""
 
     def __init__(self):
         self.steps = []
@@ -60,9 +60,9 @@ def test_list_devices_without_exe_is_empty():
 def test_placement_is_read_from_the_engine_log(tmp_path):
     log = tmp_path / "llama.log"
     srv = agent.LlamaServer(tmp_path, log)
-    assert srv.placement() is None  # no log yet
+    assert srv.placement() is None  # лога ещё нет
     log.write_text("load_tensors: offloading 0/33 layers to GPU\n", encoding="utf-8")
-    assert srv.placement() is None  # "offloading" is a plan, not the result
+    assert srv.placement() is None  # «offloading» — это план, а не результат
     log.write_text("load_tensors: offloaded 0/33 layers to CPU\n", encoding="utf-8")
     assert srv.placement() == {"layers": 0, "total": 33, "where": "CPU"}
     log.write_text("load_tensors: offloaded 33/33 layers to GPU\n", encoding="utf-8")
@@ -81,7 +81,7 @@ def test_engine_falls_back_until_a_build_sees_a_device(tmp_path, monkeypatch):
     monkeypatch.setattr(agent, "_fetch_engine", fake_fetch)
     monkeypatch.setattr(agent, "list_devices", lambda exe: [])
     asyncio.run(agent._install_engine(FakeInstaller(), tmp_path, tmp_path / "llama.cpp", {"nvidia": True}))
-    assert seen == ["cuda", "vulkan", "cpu"]  # a build with no devices is thrown away, the CPU build is the floor
+    assert seen == ["cuda", "vulkan", "cpu"]  # сборку без карт выбрасываем, CPU-сборка — крайний случай
     info = json.loads((tmp_path / agent.BACKEND_FILE).read_text(encoding="utf-8"))
     assert info["backend"] == "cpu" and info["devices"] == []
 

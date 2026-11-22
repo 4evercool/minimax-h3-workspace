@@ -174,7 +174,7 @@ class App:
         self.session = None
         self.browsers = set()
         self.saved_queue = self.load_queue()
-        # ComfyUI sends per-step websocket events to the client_id of the original submission.
+        # ComfyUI шлёт события по шагам тому client_id, с которым задание отправляли.
         self.client_id = next((j['client_id'] for j in self.saved_queue if j.get('client_id')), CLIENT_ID)
         self.recovery_lock = asyncio.Lock()
         self.jobs = JobStore(self.save_queue)  # prompt_id -> job dict
@@ -1332,7 +1332,7 @@ class App:
         return [j for j in data if isinstance(j, dict) and j.get("graph") and j.get("saved", 0) > week]
 
     def queue_origin(self):
-        # Managed ports may change after a restart; external URLs may contain private components.
+        # У встроенного движка порт может меняться после перезапуска; в адресе своего ComfyUI бывает личное.
         root = self.comfy_root() if self.config.get('engine') == 'managed' and not self.comfy_override else None
         source = f'managed:{root}' if root else self.comfy.rstrip('/')
         return hashlib.sha256(source.encode('utf-8')).hexdigest()
@@ -1386,7 +1386,7 @@ class App:
             body = None
         if not isinstance(body, dict) or ('restart_id' in body and not isinstance(body['restart_id'], str)):
             return web.json_response({'error': 'Нужен идентификатор сохранённого задания.'}, status=400)
-        async with self.recovery_lock:  # two clicks/windows must not resubmit the same graph
+        async with self.recovery_lock:  # два клика или два окна не должны отправить один граф дважды
             return await self._recover_queue(body.get('restart_id'))
 
     async def _recover_queue(self, restart_id):
@@ -1443,13 +1443,13 @@ class App:
                         result['deferred'].append(dict(row, message='Запись есть в истории, но результат ещё не подтверждён.'))
                         continue
                 else:
-                    # A library record can outlive ComfyUI history (which is cleared on restart).
+                    # Запись в Библиотеке может пережить историю ComfyUI: она чистится при перезапуске.
                     items = [self.public(it) for it in self.library.items if it.get('prompt_id') == pid]
                     if items:
                         result['finished'].append(dict(row, items=items))
                     elif pid and restart_id == pid:
-                        # Replay the saved graph as-is. A current ComfyUI honours the original UUID, so
-                        # a lost acknowledgement can be reconciled on the next check, not blindly retried.
+                        # Повторяем сохранённый граф как есть. Текущий ComfyUI принимает исходный UUID,
+                        # поэтому потерянное подтверждение сверяется следующей проверкой, а не слепым ретраем.
                         await self.stop_llm()
                         status, reply = await self.comfy_json('POST', '/prompt', json={
                             'prompt': j['graph'], 'prompt_id': pid, 'client_id': self.client_id,
@@ -4163,15 +4163,15 @@ class App:
                     continue
                 age, silent = now - job.get("t0", now), now - job.get("last_ev", job.get("t0", now))
                 if pid in queued_ids:
-                    # Legacy snapshots have no websocket client_id; the queue still tells us when they start.
+                    # В старых снимках нет client_id: когда задание начнётся, скажет сама очередь.
                     if job.get('recovered') and job['state'] == 'queued' and pid in running_ids:
                         job['state'] = 'running'
                         job['last_ev'] = now
                         await self.send_stage(job, 'running')
                         continue
                     if job["state"] == "running" and silent > watchdog.QUIET_NOTICE:
-                        # ComfyUI still holds the job: a long take spends ~20 minutes on one sampling step,
-                        # so silence alone is not a hang — only hours of it with an idle card are
+                        # ComfyUI всё ещё держит задание: длинный клип тратит ~20 минут на один шаг,
+                        # поэтому тишина сама по себе — не зависание; только часы тишины при простое карты
                         gpu = await asyncio.to_thread(self.monitor.gpu)
                         busy = None if not gpu else (gpu.get("util") or 0) >= 5
                         if watchdog.job_verdict(True, silent, busy) == "notice":

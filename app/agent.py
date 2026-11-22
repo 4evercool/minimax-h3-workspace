@@ -19,9 +19,10 @@ import engine
 
 LLAMA_BUILD = "b11985"
 _LLAMA_BASE = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_BUILD}"
-# Which engine build to fetch. A Vulkan-only build silently falls back to the CPU on machines where
-# the Vulkan loader has no registered driver (a fresh RTX 4090 install ran at ~6 tok/s instead of
-# ~105 that way), so on NVIDIA we fetch the CUDA build first and then check what the engine sees.
+# Какую сборку движка качать. Сборка только с Vulkan молча уходит на процессор там,
+# где у загрузчика Vulkan нет зарегистрированного драйвера (на чистой машине с RTX 4090
+# вышло ~6 ток/с вместо ~105), поэтому на NVIDIA сначала берём сборку CUDA и проверяем,
+# что движок видит карту.
 LLAMA_BACKENDS = {
     "cuda": {"title": "CUDA", "zip": f"llama-{LLAMA_BUILD}-bin-win-cuda-12.4-x64.zip", "zip_size": 279.8e6,
              "runtime": f"cudart-llama-bin-win-cuda-12.4-x64.zip", "runtime_size": 391.4e6},
@@ -34,12 +35,12 @@ BACKEND_FILE = "llama-backend.json"
 
 
 def backend_plan(hw):
-    """Engine builds to try on this machine, best first. The last one always works."""
+    """Сборки движка для этой машины, от лучшей к худшей. Последняя работает всегда."""
     return ["cuda", "vulkan", "cpu"] if (hw or {}).get("nvidia") else ["vulkan", "cpu"]
 
 
 def list_devices(exe):
-    """Devices the engine really sees ('CUDA0: ...'); empty means it will run on the processor."""
+    """Карты, которые движок реально видит ('CUDA0: ...'); пусто — будет считать на процессоре."""
     if not exe:
         return []
     try:
@@ -49,7 +50,7 @@ def list_devices(exe):
         return []
     text = (out.stdout or "") + (out.stderr or "")
     lines = [ln.strip() for ln in text.splitlines()]
-    try:  # the device list sits under this header; the loader chatter above it has colons too
+    try:  # список карт идёт под этим заголовком; в болтовне загрузчика выше тоже есть двоеточия
         start = next(i for i, ln in enumerate(lines) if ln.lower().startswith("available devices"))
     except StopIteration:
         return []
@@ -902,14 +903,14 @@ class LlamaServer:
         return hits[0] if hits else None
 
     def _load_info(self):
-        """What engine build was installed and which devices it saw (written by install)."""
+        """Какая сборка движка стоит и какие карты она видела (пишется при установке)."""
         try:
             return json.loads((self.root / BACKEND_FILE).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
 
     def backend(self):
-        """Which engine build is in place and what it sees; an engine put there by hand is probed once."""
+        """Какая сборка стоит и что она видит; сборку, положенную руками, проверяем один раз."""
         if not self.info and self.exe():
             devices = list_devices(self.exe())
             if any(d.startswith("CUDA") for d in devices):
@@ -925,7 +926,7 @@ class LlamaServer:
         return list_devices(self.exe())
 
     def placement(self):
-        """{'layers', 'total', 'where'} from the running engine's log — how much of the model sits on the GPU."""
+        """{'layers', 'total', 'where'} из лога движка — сколько модели реально легло на видеокарту."""
         try:
             st = self.log_path.stat()
         except OSError:
@@ -934,7 +935,7 @@ class LlamaServer:
         if getattr(self, "_place_key", None) == key:
             return self._place_val
         hits = []
-        for start in (0, max(0, st.st_size - 262144)):  # the load line sits at the start, the tail catches late writes
+        for start in (0, max(0, st.st_size - 262144)):  # строка загрузки в начале, хвост страхует поздние записи
             try:
                 with open(self.log_path, "rb") as f:
                     f.seek(start)
@@ -1015,7 +1016,7 @@ def _engine_exe(llama_dir):
 
 
 async def _fetch_engine(installer, root, llama_dir, backend):
-    """Unpack one engine build into llama_dir; CUDA also needs its cuBLAS/cuDART runtime next to the binaries."""
+    """Распаковать одну сборку движка в llama_dir; сборке CUDA рядом нужны cuBLAS/cuDART."""
     spec = LLAMA_BACKENDS[backend]
     downloads = Path(root) / "downloads"
     downloads.mkdir(parents=True, exist_ok=True)
@@ -1036,7 +1037,7 @@ async def _fetch_engine(installer, root, llama_dir, backend):
 
 
 async def _install_engine(installer, root, llama_dir, hw):
-    """Try the builds in order and keep the first one that actually sees a GPU; the CPU build is the floor."""
+    """Пробовать сборки по порядку и оставить первую, которая реально видит карту; CPU-сборка — крайний случай."""
     plan = backend_plan(hw)
     for backend in plan:
         spec = await _fetch_engine(installer, root, llama_dir, backend)
@@ -1052,7 +1053,7 @@ async def _install_engine(installer, root, llama_dir, hw):
 
 
 async def install(installer, root, variant, runtime_only=False, whisper_dir=None, hw=None):
-    """Fetch llama.cpp (the build that fits this GPU) and, unless the user has their own, the model."""
+    """Скачать llama.cpp (сборку под эту видеокарту) и, если своя модель не указана, саму модель."""
     root = Path(root)
     llama_dir = root / "llama.cpp"
     if not (llama_dir.exists() and list(llama_dir.rglob("llama-server.exe"))):

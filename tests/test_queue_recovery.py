@@ -1,4 +1,4 @@
-"""Real Workspace handlers, temporary stores and a fake ComfyUI. No GPU or network."""
+"""Настоящие обработчики Workspace, временные хранилища и поддельный ComfyUI. Без GPU и сети."""
 import asyncio
 import json
 import sys
@@ -68,7 +68,7 @@ def test_reattaches_without_resubmitting_and_tracks_completion(env, bucket, stat
     status, result = call(app.h_queue_resume)
     assert status == 200
     assert [(j['prompt_id'], j['state']) for j in result['jobs']] == [(PID, state)]
-    # Restarting Workspace a second time must still remember the original job.
+    # Повторный запуск Workspace должен всё ещё помнить исходное задание.
     assert call(open_app().h_queue_saved)[1]['count'] == 1
     remote.history[PID] = finished()
     asyncio.run(app.on_comfy_event({'type': 'execution_success', 'data': {'prompt_id': PID}}))
@@ -103,7 +103,7 @@ def test_only_explicit_retry_of_a_still_missing_id_can_submit(env):
     assert call(open_app().h_queue_saved)[1]['count'] == 1
     status, result = call(app.h_queue_resume, {'restart_id': PID})
     assert status == 200 and len(result['jobs']) == 1 and len(remote.posts) == 1
-    call(app.h_queue_resume, {'restart_id': PID})  # repeated click / second window
+    call(app.h_queue_resume, {'restart_id': PID})  # повторный клик / второе окно
     assert len(remote.posts) == 1
 
 
